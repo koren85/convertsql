@@ -1,0 +1,22 @@
+# Пример конфигурации для пакетной обработки
+name: example_batch
+description: "Пример пакетной обработки примеров SQL-скриптов"
+
+# Пути к директориям
+input_dir: "scripts/examples"
+output_dir: "converted/examples"
+
+# Настройки обработки
+retry_count: 3
+parallel: 4
+generate_html_report: true
+
+# Пользовательские параметры для подстановки
+params:
+  startDate: "'2023-01-01'"
+  endDate: "'2023-12-31'"
+  userTypeID: "1"
+  region: "'Europe'"
+  topRank: "10"
+  categoryID: "5"
+  minSalesAmount: "1000"
