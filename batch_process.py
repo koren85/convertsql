@@ -242,13 +242,16 @@ def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_dock
     
     print(f"Отчет сохранен в {report_path}")
     
-    # Генерируем HTML отчет
+    # Генерируем HTML/Excel/JSON отчет по итоговому json-отчёту
     if batch_config.get('generate_html_report', True):
         report_generator = ReportGenerator(config)
-        reports = report_generator.generate_summary_report()
-        print("Сгенерированы итоговые отчеты:")
-        for report_type, report_path in reports.items():
-            print(f"  - {report_type}: {report_path}")
+        reports = report_generator.generate_summary_report(str(report_path))
+        if reports:
+            print("Сгенерированы итоговые отчеты:")
+            for report_type, report_path in reports.items():
+                print(f"  - {report_type}: {report_path}")
+        else:
+            print("Нет данных для итогового отчёта.")
     
     return success_count == len(results)
 

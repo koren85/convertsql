@@ -6,37 +6,30 @@ from datetime import datetime
 class ReportGenerator:
     def __init__(self, config):
         self.config = config
-        self.logs_dir = config.LOGS_DIR
         self.reports_dir = config.REPORTS_DIR
-    
-    def generate_summary_report(self):
+
+    def generate_summary_report(self, batch_report_path):
         """
-        Генерирует итоговый отчет о конвертации всех скриптов
+        Генерирует итоговый отчет о конвертации всех скриптов по итоговому json-отчёту
         """
-        logs = self._collect_all_logs()
-        
-        if not logs:
-            print("No logs found. Cannot generate report.")
-            return
-        
-        # Создаем DataFrame из логов
-        df = pd.DataFrame(logs)
-        
-        # Группируем по имени скрипта
-        grouped = df.groupby('script').agg({
-            'status': lambda x: 'success' if all(s == 'success' for s in x) else 'failed',
-            'timestamp': 'max'
-        }).reset_index()
-        
-        # Переименовываем колонки
-        grouped.columns = ['Script', 'Status', 'Last Updated']
-        
-        # Дополнительная информация
-        total_scripts = grouped.shape[0]
-        successful_scripts = sum(grouped['Status'] == 'success')
-        failed_scripts = total_scripts - successful_scripts
-        
-        # Создаем отчет в HTML
+        # Читаем итоговый json-отчёт
+        with open(batch_report_path, 'r') as f:
+            batch_report = json.load(f)
+        results = batch_report.get('results', [])
+        if not results:
+            print("Нет данных для отчёта (results пустой)")
+            return None
+        # Готовим DataFrame
+        df = pd.DataFrame(results)
+        df['Status'] = df['success'].map(lambda x: 'success' if x else 'failed')
+        df['Error'] = df['error'].fillna('')
+        # Для красоты
+        df['Script'] = df['script']
+        # Считаем статистику
+        total_scripts = len(df)
+        successful_scripts = (df['Status'] == 'success').sum()
+        failed_scripts = (df['Status'] == 'failed').sum()
+        # HTML отчёт
         report_html = f"""
         <html>
         <head>
@@ -63,94 +56,39 @@ class ReportGenerator:
                 <p>Failed: <span class="failed">{failed_scripts}</span></p>
                 <p>Success Rate: {(successful_scripts / total_scripts * 100) if total_scripts > 0 else 0:.2f}%</p>
             </div>
-            
             <h2>Script Details</h2>
             <table>
                 <tr>
                     <th>Script</th>
                     <th>Status</th>
-                    <th>Last Updated</th>
+                    <th>Error</th>
                 </tr>
         """
-        
-        # Добавляем строки таблицы
-        for _, row in grouped.iterrows():
+        for _, row in df.iterrows():
             status_class = "success" if row['Status'] == 'success' else "failed"
             report_html += f"""
                 <tr>
                     <td>{row['Script']}</td>
-                    <td class="{status_class}">{row['Status']}</td>
-                    <td>{row['Last Updated']}</td>
+                    <td class=\"{status_class}\">{row['Status']}</td>
+                    <td>{row['Error']}</td>
                 </tr>
             """
-        
         report_html += """
             </table>
         </body>
         </html>
         """
-        
-        # Сохраняем отчет
-        report_path = os.path.join(self.reports_dir, f'migration_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.html')
-        with open(report_path, 'w') as f:
+        # Сохраняем отчёты
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_html_path = os.path.join(self.reports_dir, f'migration_report_{ts}.html')
+        with open(report_html_path, 'w') as f:
             f.write(report_html)
-        
-        # Создаем также Excel-отчет
-        excel_path = os.path.join(self.reports_dir, f'migration_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx')
-        grouped.to_excel(excel_path, index=False)
-        
-        # Подробный отчет в формате JSON
-        detailed_report = {
-            'summary': {
-                'total_scripts': total_scripts,
-                'successful_scripts': successful_scripts,
-                'failed_scripts': failed_scripts,
-                'success_rate': (successful_scripts / total_scripts * 100) if total_scripts > 0 else 0,
-                'generated_at': datetime.now().isoformat()
-            },
-            'scripts': self._get_detailed_script_info()
-        }
-        
-        json_path = os.path.join(self.reports_dir, f'migration_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json')
-        with open(json_path, 'w') as f:
-            json.dump(detailed_report, f, indent=2)
-        
+        excel_path = os.path.join(self.reports_dir, f'migration_report_{ts}.xlsx')
+        df[['Script', 'Status', 'Error']].to_excel(excel_path, index=False)
+        json_path = os.path.join(self.reports_dir, f'migration_report_{ts}.json')
+        df[['Script', 'Status', 'Error']].to_json(json_path, orient='records', force_ascii=False, indent=2)
         return {
-            'html_report': report_path,
+            'html_report': report_html_path,
             'excel_report': excel_path,
             'json_report': json_path
         }
-    
-    def _collect_all_logs(self):
-        """
-        Собирает все логи из файлов
-        """
-        logs = []
-        for filename in os.listdir(self.logs_dir):
-            if filename.endswith('.json'):
-                try:
-                    with open(os.path.join(self.logs_dir, filename), 'r') as f:
-                        file_logs = json.load(f)
-                        if isinstance(file_logs, list):
-                            logs.extend(file_logs)
-                        else:
-                            logs.append(file_logs)
-                except Exception as e:
-                    print(f"Error reading log file {filename}: {str(e)}")
-        return logs
-    
-    def _get_detailed_script_info(self):
-        """
-        Собирает детальную информацию о каждом скрипте
-        """
-        script_info = {}
-        for filename in os.listdir(self.logs_dir):
-            if filename.endswith('.json'):
-                script_name = filename[:-5]  # удаляем .json
-                try:
-                    with open(os.path.join(self.logs_dir, filename), 'r') as f:
-                        logs = json.load(f)
-                        script_info[script_name] = logs
-                except Exception as e:
-                    print(f"Error reading log file {filename}: {str(e)}")
-        return script_info
