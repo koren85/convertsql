@@ -84,22 +84,7 @@ class AIConverter:
                 
                 # Проверяем работоспособность скрипта
                 script_works, error = self._test_script_in_postgres(current_script)
-
-                # Проверка на type mismatch — если да, сразу выходим
-                type_mismatch_patterns = [
-                    "could not identify an equality operator",
-                    "operator does not exist",
-                    "cannot compare",
-                    "ОШИБКА:  оператор не существует",
-                    "types ",
-                    "cannot be matched"
-                ]
-                def is_type_mismatch_error(error_msg):
-                    return any(pat in error_msg for pat in type_mismatch_patterns)
-                if not script_works and error and is_type_mismatch_error(error):
-                    print("⛔️ Несовпадение типов в JOIN/WHERE — не отправляю на доработку, останавливаю конвертацию!")
-                    return False, current_script, error
-
+                
                 if script_works:
                     print(f"✅ Скрипт успешно проверен в PostgreSQL (итерация {iteration+1})")
                     return True, current_script, "Успешно сконвертировано и проверено в PostgreSQL"
@@ -192,24 +177,10 @@ class AIConverter:
         else:
             success, error = self._test_with_syntax_checking(script)
         
-        # Если ошибка несовпадения типов — выводим traceback и сразу возвращаем ошибку
-        type_mismatch_patterns = [
-            "could not identify an equality operator",
-            "operator does not exist",
-            "cannot compare",
-            "ОШИБКА:  оператор не существует",
-            "types ",
-            "cannot be matched"
-        ]
-        def is_type_mismatch_error(error_msg):
-            return any(pat in error_msg for pat in type_mismatch_patterns)
-        if not success and error and is_type_mismatch_error(error):
-            import traceback
-            print("❌ Обнаружена ошибка несовпадения типов в JOIN/WHERE!")
-            traceback.print_exc()
-            return False, error
+        # Если проверка прошла успешно, возвращаем успех
         if success:
             return True, ""
+        
         return False, error
         
     def _test_in_real_postgres(self, script: str) -> Tuple[bool, str]:
@@ -256,22 +227,6 @@ class AIConverter:
                     print(f"⚠️ Не удалось подключиться к PostgreSQL: {result.stderr}")
                     print(f"Используем синтаксический анализ вместо реального тестирования.")
                     return self._test_with_syntax_checking(script)
-                # Если ошибка несовпадения типов — выводим traceback и сразу возвращаем ошибку
-                type_mismatch_patterns = [
-                    "could not identify an equality operator",
-                    "operator does not exist",
-                    "cannot compare",
-                    "ОШИБКА:  оператор не существует",
-                    "types ",
-                    "cannot be matched"
-                ]
-                def is_type_mismatch_error(error_msg):
-                    return any(pat in error_msg for pat in type_mismatch_patterns)
-                if is_type_mismatch_error(result.stderr):
-                    import traceback
-                    print("❌ Обнаружена ошибка несовпадения типов в JOIN/WHERE!")
-                    traceback.print_exc()
-                    return False, result.stderr
                 else:
                     print(f"❌ Ошибка при выполнении SQL: {result.stderr}")
                     return False, result.stderr
@@ -637,12 +592,12 @@ class AIConverter:
         )
         
         # Исправляем COALESCE с явными числовыми литералами
-        # simple_coalesce_pattern = r"COALESCE\s*\(\s*([\w.]+)\s*,\s*(\d+)\s*\)"
-        # sql_code = re.sub(
-        #     simple_coalesce_pattern,
-        #     lambda m: f"COALESCE({m.group(1)}::text, '{m.group(2)}'::text)",
-        #     sql_code
-        # )
+        simple_coalesce_pattern = r"COALESCE\s*\(\s*([\w.]+)\s*,\s*(\d+)\s*\)"
+        sql_code = re.sub(
+            simple_coalesce_pattern,
+            lambda m: f"COALESCE({m.group(1)}::text, '{m.group(2)}'::text)",
+            sql_code
+        )
         
         # Исправляем общие случаи COALESCE
         def fix_coalesce(match):
@@ -659,46 +614,55 @@ class AIConverter:
                     args.append(current_arg.strip())
                     current_arg = ""
                 else:
-                    if char == '(': depth += 1
-                    elif char == ')': depth -= 1
+                    if char == '(':
+                        depth += 1
+                    elif char == ')':
+                        depth -= 1
                     current_arg += char
             
             if current_arg:
                 args.append(current_arg.strip())
             
+            # Если у нас меньше 2 аргументов, возвращаем оригинал
             if len(args) < 2:
                 return full_match
             
+            # Анализируем типы аргументов
             arg1, arg2 = args[0], args[1]
+            
+            # Проверяем на числовые литералы
             arg1_is_number = arg1.strip().replace('.', '', 1).isdigit()
             arg2_is_number = arg2.strip().replace('.', '', 1).isdigit()
+            
+            # Проверяем на строковые литералы
             arg1_is_string = "'" in arg1
             arg2_is_string = "'" in arg2
+            
+            # Проверяем на типы citext, text, varchar
             arg1_has_text_type = ('::citext' in arg1.lower() or '::text' in arg1.lower() or '::varchar' in arg1.lower())
             arg2_has_text_type = ('::citext' in arg2.lower() or '::text' in arg2.lower() or '::varchar' in arg2.lower())
             
-            # Список полей, которые всегда int и не требуют приведения типов
-            int_fields = ['a_status', 'status', 'petitionid', 'id', 'ouid', 'from_id', 'to_id', 'a_ouid', 'a_id']
-            def is_int_field(arg):
-                # Проверяем, что это просто имя поля (или с префиксом), и оно в списке
-                name = arg.split('.')[-1].lower()
-                return name in int_fields
-            
-            # Если оба аргумента — int-поля или числа, не делаем никаких преобразований
-            if (is_int_field(arg1) or arg1_is_number) and (is_int_field(arg2) or arg2_is_number):
-                return f"COALESCE({arg1}, {arg2})"
+            # Преобразования для совместимости типов:
             
             # Если одно из полей имеет тип text, а другое - число
             if arg1_has_text_type and arg2_is_number:
                 return f"COALESCE({arg1}, '{arg2}'::text)"
+            
             if arg2_has_text_type and arg1_is_number:
                 return f"COALESCE('{arg1}'::text, {arg2})"
+            
+            # Если смешиваются явные строки и числа
             if arg1_is_string and arg2_is_number:
                 return f"COALESCE({arg1}, '{arg2}'::text)"
+            
             if arg2_is_string and arg1_is_number:
                 return f"COALESCE('{arg1}'::text, {arg2})"
+            
+            # Общий случай - если один из аргументов число (0, 1 и т.д.), приводим к тексту
             if arg1_is_number or arg2_is_number:
+                # Безопасно приводим все к тексту, даже если нет явного указания на тип
                 return f"COALESCE({arg1}::text, {arg2}::text)"
+            
             return full_match
         
         sql_code = re.sub(
@@ -738,9 +702,33 @@ class AIConverter:
             fix_string_number_comparison, 
             sql_code
         )
-
-        # Список имен полей, для которых не нужно добавлять приведение типов
-        id_fields = ['ouid', 'a_ouid', 'a_id', 'id', 'from_id', 'to_id', 'a_mspholder', 'documentstype']
+        
+        # Исправляем сравнения в JOIN и WHERE между идентификаторами
+        def fix_join_comparison(match):
+            full_match = match.group(0)
+            left_field = match.group(1)
+            operator = match.group(2)
+            right_field = match.group(3)
+            
+            # Добавляем явное приведение типов для идентификаторов
+            # Приводим оба поля к типу TEXT, как наиболее универсальному
+            return f"{left_field}::varchar {operator} {right_field}::varchar"
+        
+        # Ищем сравнения в предложениях ON и WHERE, где нет явного приведения типов
+        join_pattern = r"ON\s+(\b[\w.]+\b)(\s*=\s*)(\b[\w.]+\b)(?!\s*::)"
+        sql_code = re.sub(
+            join_pattern, 
+            lambda m: f"ON {fix_join_comparison(m)}", 
+            sql_code
+        )
+        
+        # Аналогично для WHERE
+        where_pattern = r"WHERE\s+(\b[\w.]+\b)(\s*=\s*)(\b[\w.]+\b)(?!\s*::)"
+        sql_code = re.sub(
+            where_pattern, 
+            lambda m: f"WHERE {fix_join_comparison(m)}", 
+            sql_code
+        )
         
         # Добавляем явное приведение типов в CASE выражениях
         def fix_case_expression(match):
