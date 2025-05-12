@@ -10,6 +10,8 @@ output_dir: "converted/examples"
 retry_count: 3
 parallel: 4
 generate_html_report: true
+ai_provider: anthropic
+max_iterations: 3
 
 # Пользовательские параметры для подстановки
 params:

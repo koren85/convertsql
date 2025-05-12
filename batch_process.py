@@ -20,8 +20,9 @@ from src.converter import SQLConverter
 from src.postgres_tester import PostgresTester
 from src.logger import Logger
 from src.report_generator import ReportGenerator
+from src.ai_converter import AIConverter
 
-def process_script(script_path, output_dir, params=None, retry_count=3, verbose=False):
+def process_script(script_path, output_dir, params=None, retry_count=3, verbose=False, ai_provider='anthropic', max_iterations=3):
     """
     Обрабатывает один SQL скрипт с заданными параметрами
     """
@@ -29,7 +30,7 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
     
     # Создаем объекты для работы со скриптом
     parser = SQLParser(config)
-    converter = SQLConverter(config)
+    converter = AIConverter(config)
     tester = PostgresTester(config)
     logger = Logger(config)
     
@@ -39,15 +40,20 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
             script_content = f.read()
         
         # Логируем начало обработки
-        logger.log_script_processing(script_name, 'start', 'success')
+        # logger.log_script_processing(script_name, 'start', 'success')
         
         # Парсим скрипт
         parsed_script = parser.parse_script(script_content)
-        logger.log_script_processing(script_name, 'parsing', 'success')
+        # logger.log_script_processing(script_name, 'parsing', 'success')
         
-        # Конвертируем скрипт
-        converted_script = converter.convert(parsed_script)
-        logger.log_script_processing(script_name, 'conversion', 'success')
+        # Конвертация через нейросеть
+        # Временно подменяем config.AI_PROVIDER
+        orig_provider = getattr(config, 'AI_PROVIDER', None)
+        config.AI_PROVIDER = ai_provider
+        success, converted_script, message = converter.convert_with_ai(parsed_script, error_message=None, max_iterations=max_iterations)
+        if orig_provider is not None:
+            config.AI_PROVIDER = orig_provider
+        # logger.log_script_processing(script_name, 'conversion', 'success' if success else 'failed', message)
         
         # Заменяем параметры на значения
         script_params = config.DEFAULT_PARAMS.copy()
@@ -55,7 +61,7 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
             script_params.update(params)
             
         script_with_params = parser.replace_params(converted_script, script_params)
-        logger.log_script_processing(script_name, 'parameter_replacement', 'success')
+        # logger.log_script_processing(script_name, 'parameter_replacement', 'success')
         
         # Тестируем в PostgreSQL
         retries = 0
@@ -67,18 +73,15 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
                 test_result = tester.test_script(script_with_params)
                 if test_result['success']:
                     test_success = True
-                    logger.log_script_processing(script_name, 'testing', 'success', {
-                        'execution_time': test_result['execution_time'],
-                        'row_count': test_result['row_count']
-                    })
+                    # logger.log_script_processing(script_name, 'testing', 'success', {
+                    #     'execution_time': test_result['execution_time'],
+                    #     'row_count': test_result['row_count']
+                    # })
                 else:
                     last_error = test_result['error']
-                    # Пытаемся исправить ошибки
                     if verbose:
                         print(f"Попытка {retries+1}: Ошибка выполнения {script_name}: {last_error}")
-                        
-                    converted_script = tester.fix_script(converted_script, last_error)
-                    script_with_params = parser.replace_params(converted_script, script_params)
+                    # Не вызываем fix_script, AI уже делал исправления
                     retries += 1
             except Exception as e:
                 last_error = str(e)
@@ -86,8 +89,9 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
                     print(f"Попытка {retries+1}: Исключение при выполнении {script_name}: {last_error}")
                 retries += 1
         
-        if not test_success:
-            logger.log_script_processing(script_name, 'testing', 'failed', last_error)
+        # Лог только если ошибка
+        if not test_success or not success:
+            logger.log_script_processing(script_name, 'error', 'failed', last_error or message)
             if verbose:
                 print(f"❌ {script_name}: Не удалось выполнить после {retry_count} попыток")
         elif verbose:
@@ -97,12 +101,12 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
         output_path = os.path.join(output_dir, script_name)
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(converted_script)
-        logger.log_script_processing(script_name, 'saving', 'success')
+        # logger.log_script_processing(script_name, 'saving', 'success')
         
         return {
             'script': script_name,
-            'success': test_success,
-            'error': last_error if not test_success else None,
+            'success': test_success and success,
+            'error': last_error if not test_success or not success else None,
             'retries': retries,
             'original_size': len(script_content),
             'converted_size': len(converted_script)
@@ -123,7 +127,7 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
             'converted_size': 0
         }
 
-def process_batch(config_file, verbose=False):
+def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_docker_check=False, max_iterations=3):
     """
     Обрабатывает пакет скриптов по конфигурации
     """
@@ -176,13 +180,14 @@ def process_batch(config_file, verbose=False):
     
     # Проверяем Docker
     tester = PostgresTester(config)
-    try:
-        tester.ensure_docker_running()
-        print("Docker контейнер с PostgreSQL запущен")
-    except Exception as e:
-        print(f"Ошибка при проверке Docker контейнера: {str(e)}")
-        print("Запустите 'docker-compose up -d' перед использованием скрипта")
-        return False
+    if not skip_docker_check:
+        try:
+            tester.ensure_docker_running()
+            print("Docker контейнер с PostgreSQL запущен")
+        except Exception as e:
+            print(f"Ошибка при проверке Docker контейнера: {str(e)}")
+            print("Запустите 'docker-compose up -d' перед использованием скрипта")
+            return False
     
     # Обрабатываем скрипты параллельно
     start_time = time.time()
@@ -191,7 +196,7 @@ def process_batch(config_file, verbose=False):
     with ThreadPoolExecutor(max_workers=parallel) as executor:
         # Запускаем обработку всех скриптов
         future_to_script = {
-            executor.submit(process_script, str(script), str(output_dir), params, retry_count, verbose): script
+            executor.submit(process_script, str(script), str(output_dir), params, retry_count, verbose, ai_provider, max_iterations): script
             for script in scripts
         }
         
@@ -254,6 +259,9 @@ def main():
     parser = argparse.ArgumentParser(description='Пакетная обработка SQL скриптов')
     parser.add_argument('config', help='Путь к YAML-файлу с конфигурацией пакета')
     parser.add_argument('--verbose', '-v', action='store_true', help='Подробный вывод')
+    parser.add_argument('--provider', default='anthropic', help='AI провайдер: anthropic или openai')
+    parser.add_argument('--skip-docker-check', action='store_true', help='Не проверять Docker')
+    parser.add_argument('--max-iterations', type=int, default=3, help='Максимум итераций AI-конвертации')
     
     args = parser.parse_args()
     
@@ -264,7 +272,7 @@ def main():
         return 1
     
     # Запускаем пакетную обработку
-    success = process_batch(config_file, args.verbose)
+    success = process_batch(config_file, args.verbose, args.provider, args.skip_docker_check, args.max_iterations)
     
     return 0 if success else 1
 

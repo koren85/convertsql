@@ -746,20 +746,30 @@ class AIConverter:
         def fix_case_expression(match):
             full_match = match.group(0)
             case_body = match.group(1)
-            
-            # Если в CASE есть смешение строк и чисел
-            has_string = "'" in case_body
-            has_number = re.search(r'\bTHEN\s+(\d+)\b', case_body) is not None
-            
+
+            # Собираем все THEN/ELSE значения
+            then_else_values = re.findall(r"THEN\s+([^\s]+)|ELSE\s+([^\s]+)", case_body)
+            values = [v[0] or v[1] for v in then_else_values]
+            has_number = any(re.fullmatch(r"\d+", v) for v in values if v is not None)
+            has_string = any("'" in v for v in values if v is not None)
+            has_null = any(v.upper() == 'NULL' for v in values if v is not None)
+
+            # Если есть и строки, и числа — приводим числа к ::text
             if has_string and has_number:
-                # Заменяем THEN число на THEN 'число'
-                case_body = re.sub(
-                    r'\bTHEN\s+(\d+)\b', 
-                    r'THEN \1::text', 
-                    case_body
-                )
+                def repl(m):
+                    val = m.group(1)
+                    if re.fullmatch(r"\d+", val):
+                        return f"THEN {val}::text"
+                    return m.group(0)
+                case_body = re.sub(r"THEN\s+(\d+)", repl, case_body)
+                def repl_else(m):
+                    val = m.group(1)
+                    if re.fullmatch(r"\d+", val):
+                        return f"ELSE {val}::text"
+                    return m.group(0)
+                case_body = re.sub(r"ELSE\s+(\d+)", repl_else, case_body)
                 return f"CASE {case_body} END"
-            
+            # Если все числа или NULL — ничего не делаем
             return full_match
         
         sql_code = re.sub(
@@ -776,5 +786,8 @@ class AIConverter:
             lambda m: f"{m.group(1)} = '{m.group(2)}'",
             sql_code
         )
+        
+        # Приводим DATEDIFF(DAY, ...) к DATEDIFF('day', ...)
+        sql_code = re.sub(r"DATEDIFF\s*\(\s*DAY\s*,", "DATEDIFF('day',", sql_code, flags=re.IGNORECASE)
         
         return sql_code
