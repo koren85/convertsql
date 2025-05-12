@@ -374,3 +374,77 @@ SELECT * FROM users WHERE created_date BETWEEN {startDate} AND {endDate}
 ## Лицензия
 
 Этот проект распространяется под лицензией MIT.
+
+## Быстрый старт: одиночная конвертация через нейросеть
+
+Для конвертации одного скрипта с помощью нейросети:
+
+```bash
+python test_ai_converter.py scripts/examples/example2.sql --provider anthropic --skip-docker-check --save converted/anthropic_result2.sql
+```
+
+- `--provider` — выбрать провайдера нейросети (`anthropic` или `openai`)
+- `--skip-docker-check` — не проверять Docker
+- `--save` — путь для сохранения результата
+
+Можно также указать дополнительные параметры (см. `--help`).
+
+## Пакетная обработка скриптов (batch mode)
+
+Для пакетной обработки всех скриптов из директории по YAML-конфигу:
+
+```bash
+python batch_process.py configs/config.yaml --skip-docker-check --verbose
+```
+
+- `configs/config.yaml` — путь к вашему YAML-конфигу (пример ниже)
+- `--skip-docker-check` — не проверять Docker
+- `--verbose` — подробный вывод
+- `--provider anthropic` — явно указать провайдера (перекроет значение из yaml)
+- `--max-iterations 3` — максимальное число итераций AI-конвертации (перекроет значение из yaml)
+
+**После завершения обработки:**
+- Все сконвертированные скрипты будут в директории, указанной в `output_dir`.
+- Итоговый отчёт (HTML/Excel/JSON) будет сгенерирован в директории `reports/`.
+- В отчёте будут все скрипты: успешные и с ошибками, с текстом ошибки (если была).
+
+### Пример актуального YAML-конфига
+
+```yaml
+name: example_batch
+input_dir: "scripts/examples"
+output_dir: "converted/examples"
+retry_count: 3
+parallel: 4
+generate_html_report: true
+ai_provider: anthropic
+max_iterations: 3
+params:
+  startDate: "'2023-01-01'"
+  endDate: "'2023-12-31'"
+  userTypeID: "1"
+  region: "'Europe'"
+  topRank: "10"
+  categoryID: "5"
+  minSalesAmount: "1000"
+```
+
+- `ai_provider` и `max_iterations` можно не указывать, если задаёте их через CLI.
+- `params` — параметры для подстановки в скрипты.
+
+## Примеры команд
+
+**Одиночная конвертация через нейросеть:**
+```bash
+python test_ai_converter.py scripts/examples/example2.sql --provider anthropic --skip-docker-check --save converted/anthropic_result2.sql
+```
+
+**Пакетная обработка:**
+```bash
+python batch_process.py configs/config.yaml --skip-docker-check --verbose
+```
+
+**Пакетная обработка с явным указанием провайдера и числа итераций:**
+```bash
+python batch_process.py configs/config.yaml --provider openai --max-iterations 5 --skip-docker-check --verbose
+```
