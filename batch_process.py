@@ -26,7 +26,7 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
     """
     Обрабатывает один SQL скрипт с заданными параметрами
     """
-    script_name = os.path.basename(script_path)
+    script_name = "conv_" + os.path.basename(script_path)
     
     # Создаем объекты для работы со скриптом
     parser = SQLParser(config)

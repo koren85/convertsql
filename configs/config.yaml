@@ -12,7 +12,7 @@ output_dir: "converted/exported"
 # limit 100 
 
 retry_count: 3
-parallel: 4
+parallel: 1
 generate_html_report: true
 ai_provider: anthropic
 max_iterations: 3
