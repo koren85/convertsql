@@ -172,7 +172,8 @@ def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_dock
     output_dir.mkdir(exist_ok=True, parents=True)
     
     # Находим все SQL-скрипты
-    scripts = list(input_dir.glob('*.sql'))
+    #scripts = list(input_dir.glob('*.sql'))
+    scripts = sorted(input_dir.glob('*.sql'), key=lambda p: p.name)
     if limit is not None:
         scripts = scripts[:limit]
     if not scripts:
