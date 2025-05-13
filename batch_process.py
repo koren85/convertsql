@@ -127,7 +127,7 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
             'converted_size': 0
         }
 
-def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_docker_check=False, max_iterations=3):
+def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_docker_check=False, max_iterations=3, limit=None):
     """
     Обрабатывает пакет скриптов по конфигурации
     """
@@ -153,6 +153,7 @@ def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_dock
     retry_count = batch_config.get('retry_count', 3)
     parallel = batch_config.get('parallel', 4)
     params = batch_config.get('params', {})
+    limit = limit or batch_config.get('limit')
     
     print(f"Запуск пакетной обработки: {batch_name}")
     print(f"Исходная директория: {input_dir}")
@@ -172,6 +173,8 @@ def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_dock
     
     # Находим все SQL-скрипты
     scripts = list(input_dir.glob('*.sql'))
+    if limit is not None:
+        scripts = scripts[:limit]
     if not scripts:
         print(f"В директории {input_dir} не найдено SQL-скриптов")
         return False
@@ -265,6 +268,7 @@ def main():
     parser.add_argument('--provider', default='anthropic', help='AI провайдер: anthropic или openai')
     parser.add_argument('--skip-docker-check', action='store_true', help='Не проверять Docker')
     parser.add_argument('--max-iterations', type=int, default=3, help='Максимум итераций AI-конвертации')
+    parser.add_argument('--limit', type=int, default=None, help='Максимальное количество файлов для обработки')
     
     args = parser.parse_args()
     
@@ -275,7 +279,7 @@ def main():
         return 1
     
     # Запускаем пакетную обработку
-    success = process_batch(config_file, args.verbose, args.provider, args.skip_docker_check, args.max_iterations)
+    success = process_batch(config_file, args.verbose, args.provider, args.skip_docker_check, args.max_iterations, args.limit)
     
     return 0 if success else 1
 

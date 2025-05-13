@@ -402,6 +402,9 @@ python batch_process.py configs/config.yaml --skip-docker-check --verbose
 - `--verbose` — подробный вывод
 - `--provider anthropic` — явно указать провайдера (перекроет значение из yaml)
 - `--max-iterations 3` — максимальное число итераций AI-конвертации (перекроет значение из yaml)
+- `--limit 100` — ограничить количество обрабатываемых файлов (перекроет значение из yaml)
+
+**Параметр `limit`** позволяет ограничить количество файлов для пакетной обработки (например, для теста на подмножестве файлов). Можно задать как через CLI (`--limit 100`), так и в yaml-конфиге (`limit: 100`). Если указаны оба, приоритет у CLI.
 
 **После завершения обработки:**
 - Все сконвертированные скрипты будут в директории, указанной в `output_dir`.
@@ -419,6 +422,7 @@ parallel: 4
 generate_html_report: true
 ai_provider: anthropic
 max_iterations: 3
+limit: 100  # ограничить количество файлов (опционально)
 params:
   startDate: "'2023-01-01'"
   endDate: "'2023-12-31'"
@@ -429,7 +433,7 @@ params:
   minSalesAmount: "1000"
 ```
 
-- `ai_provider` и `max_iterations` можно не указывать, если задаёте их через CLI.
+- `ai_provider`, `max_iterations`, `limit` можно не указывать, если задаёте их через CLI.
 - `params` — параметры для подстановки в скрипты.
 
 ## Примеры команд
@@ -444,7 +448,12 @@ python test_ai_converter.py scripts/examples/example2.sql --provider anthropic -
 python batch_process.py configs/config.yaml --skip-docker-check --verbose
 ```
 
+**Пакетная обработка с ограничением по количеству файлов:**
+```bash
+python batch_process.py configs/config.yaml --limit 100 --skip-docker-check --verbose
+```
+
 **Пакетная обработка с явным указанием провайдера и числа итераций:**
 ```bash
-python batch_process.py configs/config.yaml --provider openai --max-iterations 5 --skip-docker-check --verbose
+python batch_process.py configs/config.yaml --provider openai --max-iterations 5 --limit 50 --skip-docker-check --verbose
 ```

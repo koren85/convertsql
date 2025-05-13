@@ -1,12 +1,16 @@
 # Пример конфигурации для пакетной обработки
 name: example_batch
-description: "Пример пакетной обработки примеров SQL-скриптов"
+description: "на основе ленинского района воронежа"
 
 # Пути к директориям
-input_dir: "scripts/examples"
-output_dir: "converted/examples"
+input_dir: "scripts/exported"
+output_dir: "converted/exported"
 
 # Настройки обработки
+
+#количество обрабатываемых файлов
+# limit 100 
+
 retry_count: 3
 parallel: 4
 generate_html_report: true

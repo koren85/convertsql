@@ -57,7 +57,20 @@ try:
     
     # Выполняем запрос
     statement = connection.createStatement()
-    resultSet = statement.executeQuery("SELECT a_id, A_MSSQLFORMULA FROM PPR_CALC_ALGORITHM")
+    resultSet = statement.executeQuery("""
+        SELECT a_id, A_MSSQLFORMULA
+        FROM PPR_CALC_ALGORITHM
+        WHERE A_MSSQLFORMULA IS NOT NULL
+        AND A_USESQL = 1
+        AND A_MSSQLFORMULA LIKE '%[^}]%' -- Содержит что-то кроме закрывающих скобок
+        AND (
+            A_MSSQLFORMULA NOT LIKE '{%}%' -- Не начинается с {
+            OR A_MSSQLFORMULA LIKE '% %' -- Содержит пробелы
+            OR A_MSSQLFORMULA LIKE '%;%' -- Содержит точку с запятой
+            OR A_MSSQLFORMULA LIKE '%SELECT%'
+            OR A_MSSQLFORMULA LIKE '%FROM%'
+        )
+    """)
     
     # Сохраняем результаты
     count = 0
