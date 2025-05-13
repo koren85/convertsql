@@ -137,6 +137,10 @@ def test_ai_conversion(script_path, save_path=None, api_key=None, max_iterations
                 print(f"❌ Конвертация с помощью нейросети не удалась: {ai_result['error']}")
         else:
             print(f"❌ Ошибка при использовании нейросети: {message}")
+            if save_path and ai_converted:
+                with open(save_path, 'w', encoding='utf-8') as f:
+                    f.write(ai_converted)
+                print(f"Результат работы нейросети сохранен в {save_path} (после ошибки)")
     except Exception as e:
         print(f"❌ Ошибка при конвертации с помощью нейросети: {str(e)}")
     

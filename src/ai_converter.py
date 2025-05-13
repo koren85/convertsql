@@ -491,6 +491,8 @@ class AIConverter:
 9. Указывай в комментариях какое выражение было в оригинальном скрипте и какое получилось после конвертации
 10. НЕ добавлять лишние преобразования типов в условиях JOIN, если в оригинале их не было
 11. Если встречается выражение dateadd(day, 1-day(X), X), то замени его на DATE_TRUNC('month', X)::timestamp (например, dateadd(day, 1-day(wan.A_DATE_REG), wan.A_DATE_REG) -> DATE_TRUNC('month', wan.A_DATE_REG)::timestamp)
+12. Все выражения DATEDIFF(DAY, X, Y) и DATEDIFF('day', X, Y) конвертируй в DATE_PART('day', Y - X). Если X или Y содержит ISNULL(...), замени ISNULL на COALESCE.
+
 
 Если в запросе есть COALESCE с разными типами, явно указывай приведение типов.
 В PostgreSQL типы должны совпадать в таких функциях, как COALESCE, NULLIF, CASE и т.д.
@@ -650,74 +652,25 @@ class AIConverter:
             sql_code
         )
         
-        # Исправляем COALESCE с явными числовыми литералами
-        # simple_coalesce_pattern = r"COALESCE\s*\(\s*([\w.]+)\s*,\s*(\d+)\s*\)"
-        # sql_code = re.sub(
-        #     simple_coalesce_pattern,
-        #     lambda m: f"COALESCE({m.group(1)}::text, '{m.group(2)}'::text)",
-        #     sql_code
-        # )
-        
-        # Исправляем общие случаи COALESCE
-        def fix_coalesce(match):
-            full_match = match.group(0)
-            args_text = match.group(1)
-            
-            # Разделяем аргументы, учитывая возможные вложенные функции и скобки
-            depth = 0
-            args = []
-            current_arg = ""
-            
-            for char in args_text:
-                if char == ',' and depth == 0:
-                    args.append(current_arg.strip())
-                    current_arg = ""
-                else:
-                    if char == '(': depth += 1
-                    elif char == ')': depth -= 1
-                    current_arg += char
-            
-            if current_arg:
-                args.append(current_arg.strip())
-            
-            if len(args) < 2:
-                return full_match
-            
-            arg1, arg2 = args[0], args[1]
-            arg1_is_number = arg1.strip().replace('.', '', 1).isdigit()
-            arg2_is_number = arg2.strip().replace('.', '', 1).isdigit()
-            arg1_is_string = "'" in arg1
-            arg2_is_string = "'" in arg2
-            arg1_has_text_type = ('::citext' in arg1.lower() or '::text' in arg1.lower() or '::varchar' in arg1.lower())
-            arg2_has_text_type = ('::citext' in arg2.lower() or '::text' in arg2.lower() or '::varchar' in arg2.lower())
-            
-            # Список полей, которые всегда int и не требуют приведения типов
-            int_fields = ['a_status', 'status', 'petitionid', 'id', 'ouid', 'from_id', 'to_id', 'a_ouid', 'a_id']
+        # После всех замен: убираем ::text/::varchar у COALESCE, если оба аргумента — int-поля или числа
+        def clean_coalesce_casts(m):
+            arg1 = m.group(1).strip()
+            arg2 = m.group(2).strip()
+            int_fields = ['a_status', 'status', 'petitionid', 'id', 'ouid', 'from_id', 'to_id', 'a_ouid', 'a_id', 'a_count_all_work_day']
             def is_int_field(arg):
-                # Проверяем, что это просто имя поля (или с префиксом), и оно в списке
                 name = arg.split('.')[-1].lower()
                 return name in int_fields
-            
-            # Если оба аргумента — int-поля или числа, не делаем никаких преобразований
+            arg1_is_number = arg1.replace('.', '', 1).isdigit()
+            arg2_is_number = arg2.replace('.', '', 1).isdigit()
+            # Если оба — int-поля или числа, убираем ::text/::varchar
             if (is_int_field(arg1) or arg1_is_number) and (is_int_field(arg2) or arg2_is_number):
-                return f"COALESCE({arg1}, {arg2})"
-            
-            # Если одно из полей имеет тип text, а другое - число
-            if arg1_has_text_type and arg2_is_number:
-                return f"COALESCE({arg1}, '{arg2}'::text)"
-            if arg2_has_text_type and arg1_is_number:
-                return f"COALESCE('{arg1}'::text, {arg2})"
-            if arg1_is_string and arg2_is_number:
-                return f"COALESCE({arg1}, '{arg2}'::text)"
-            if arg2_is_string and arg1_is_number:
-                return f"COALESCE('{arg1}'::text, {arg2})"
-            if arg1_is_number or arg2_is_number:
-                return f"COALESCE({arg1}::text, {arg2}::text)"
-            return full_match
-        
+                arg1_clean = re.sub(r'::(text|varchar|citext)', '', arg1, flags=re.IGNORECASE)
+                arg2_clean = re.sub(r'::(text|varchar|citext)', '', arg2, flags=re.IGNORECASE)
+                return f"COALESCE({arg1_clean}, {arg2_clean})"
+            return m.group(0)
         sql_code = re.sub(
-            r"COALESCE\s*\(\s*(.*?)\s*\)", 
-            fix_coalesce, 
+            r"COALESCE\s*\(\s*([^,]+?)\s*,\s*([^\)]+?)\s*\)",
+            clean_coalesce_casts,
             sql_code
         )
         
@@ -803,5 +756,34 @@ class AIConverter:
         
         # Приводим DATEDIFF(DAY, ...) к DATEDIFF('day', ...)
         sql_code = re.sub(r"DATEDIFF\s*\(\s*DAY\s*,", "DATEDIFF('day',", sql_code, flags=re.IGNORECASE)
+        
+        # DATEDIFF(DAY, X, Y) и DATEDIFF('day', X, Y) -> DATE_PART('day', Y - X), ISNULL -> COALESCE
+        def datediff_to_datepart(m):
+            x = m.group(1).strip()
+            y = m.group(2).strip()
+            x = re.sub(r'ISNULL\s*\(', 'COALESCE(', x, flags=re.IGNORECASE)
+            y = re.sub(r'ISNULL\s*\(', 'COALESCE(', y, flags=re.IGNORECASE)
+            return f"DATE_PART('day', {y} - {x})"
+        sql_code = re.sub(
+            r"DATEDIFF\s*\(\s*(?:DAY|'day')\s*,\s*([^,]+?)\s*,\s*([^)]+?)\s*\)",
+            datediff_to_datepart,
+            sql_code,
+            flags=re.IGNORECASE
+        )
+
+        # YEAR(X) -> EXTRACT(YEAR FROM X::timestamp)
+        sql_code = re.sub(
+            r"YEAR\s*\(\s*([^\)]+)\s*\)",
+            r"EXTRACT(YEAR FROM \1::timestamp)",
+            sql_code,
+            flags=re.IGNORECASE
+        )
+        # MONTH(X) -> EXTRACT(MONTH FROM X::timestamp)
+        sql_code = re.sub(
+            r"MONTH\s*\(\s*([^\)]+)\s*\)",
+            r"EXTRACT(MONTH FROM \1::timestamp)",
+            sql_code,
+            flags=re.IGNORECASE
+        )
         
         return sql_code
