@@ -97,13 +97,14 @@ FUNCTION_MAPPING = {
 
 # Параметры по умолчанию для тестирования
 DEFAULT_PARAMS = {
-    "date": "'2023-01-01'",
+    'ACTIVESTATUS': 10,
+    "date": "'2023-01-01'::timestamp",
     "id": "1",
     "name": "'test_name'",
     "value": "100",
     "text": "'sample_text'",
-    "startDate": "'2023-01-01'",
-    "endDate": "'2023-12-31'",
+    "startDate": "'2023-01-01'::timestamp",
+    "endDate": "'2023-12-31'::timestamp",
     "userId": "1",
     "customerId": "1000",
     "productId": "500",

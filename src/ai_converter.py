@@ -163,7 +163,7 @@ class AIConverter:
                 if 'id' in param_name.lower() or 'ouid' in param_name.lower():
                     test_value = '1'  # ID как число
                 elif 'date' in param_name.lower():
-                    test_value = "'2023-01-01'"  # Дата как строка
+                    test_value = "'2023-01-01'::timestamp"  # Дата как строка
                 elif 'string' in param_name.lower() or 'text' in param_name.lower() or 'name' in param_name.lower():
                     test_value = "'test'"  # Строковое значение
                 
@@ -492,6 +492,8 @@ class AIConverter:
 10. НЕ добавлять лишние преобразования типов в условиях JOIN, если в оригинале их не было
 11. Если встречается выражение dateadd(day, 1-day(X), X), то замени его на DATE_TRUNC('month', X)::timestamp (например, dateadd(day, 1-day(wan.A_DATE_REG), wan.A_DATE_REG) -> DATE_TRUNC('month', wan.A_DATE_REG)::timestamp)
 12. Все выражения DATEDIFF(DAY, X, Y) и DATEDIFF('day', X, Y) конвертируй в DATE_PART('day', Y - X). Если X или Y содержит ISNULL(...), замени ISNULL на COALESCE.
+13. Если требуется обнулить время у даты (например, CONVERT(DATETIME, CONVERT(VARCHAR(10), ...))), всегда используй DATE_TRUNC('day', ...) без ::timestamp, ::date, TO_TIMESTAMP и других преобразований. Не добавляй ::timestamp к параметрам, если задача — оставить только дату.
+
 
 
 Если в запросе есть COALESCE с разными типами, явно указывай приведение типов.
@@ -792,5 +794,8 @@ class AIConverter:
             sql_code,
             flags=re.IGNORECASE
         )
+        
+        # TO_TIMESTAMP(X::text, 'YYYY-MM-DD') -> DATE_TRUNC('day', X)
+        sql_code = re.sub(r"TO_TIMESTAMP\(([^)]+?)::text,\s*'YYYY-MM-DD'\)", r"DATE_TRUNC('day', \1)", sql_code)
         
         return sql_code
