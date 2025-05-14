@@ -653,17 +653,24 @@ class AIConverter:
         )
         
         # После всех замен: убираем ::text/::varchar у COALESCE, если оба аргумента — int-поля или числа
+        int_fields = ['a_status', 'status', 'petitionid', 'id', 'ouid', 'from_id', 'to_id', 'a_ouid', 'a_id', 'a_count_all_work_day']
+        float_fields = ['a_regioncoeff']
+        def is_int_field(arg):
+            name = arg.split('.')[-1].lower()
+            return name in int_fields
+        def is_float_field(arg):
+            name = arg.split('.')[-1].lower()
+            return name in float_fields
         def clean_coalesce_casts(m):
             arg1 = m.group(1).strip()
             arg2 = m.group(2).strip()
-            int_fields = ['a_status', 'status', 'petitionid', 'id', 'ouid', 'from_id', 'to_id', 'a_ouid', 'a_id', 'a_count_all_work_day']
-            def is_int_field(arg):
-                name = arg.split('.')[-1].lower()
-                return name in int_fields
             arg1_is_number = arg1.replace('.', '', 1).isdigit()
             arg2_is_number = arg2.replace('.', '', 1).isdigit()
-            # Если оба — int-поля или числа, убираем ::text/::varchar
-            if (is_int_field(arg1) or arg1_is_number) and (is_int_field(arg2) or arg2_is_number):
+            arg1_is_float = bool(re.fullmatch(r"\d+\.\d+", arg1.strip())) or is_float_field(arg1)
+            arg2_is_float = bool(re.fullmatch(r"\d+\.\d+", arg2.strip())) or is_float_field(arg2)
+            # Если оба — int/float-поля или числа, убираем ::text/::varchar
+            if ((is_int_field(arg1) or arg1_is_number or arg1_is_float) and
+                (is_int_field(arg2) or arg2_is_number or arg2_is_float)):
                 arg1_clean = re.sub(r'::(text|varchar|citext)', '', arg1, flags=re.IGNORECASE)
                 arg2_clean = re.sub(r'::(text|varchar|citext)', '', arg2, flags=re.IGNORECASE)
                 return f"COALESCE({arg1_clean}, {arg2_clean})"

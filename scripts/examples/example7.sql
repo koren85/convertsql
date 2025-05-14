@@ -1,0 +1,144 @@
+--#params.mspHolder#
+--#params.childId#
+--#params.servServId#
+
+SELECT top 1 
+
+CASE
+    WHEN work IS NOT NULL THEN 0
+
+    WHEN A_CODE = '1' THEN (SELECT
+        A_VALUE * ww.coeff
+      FROM (SELECT pfv.A_VALUE
+  FROM PPR_FINANCE_UNIT pfu
+  LEFT JOIN PPR_FINANCE_VALUE pfv ON pfv.A_FINANCE_UNIT = pfu.A_ID
+    AND DATEDIFF(DAY, ISNULL(pfv.A_BEGIN_DATE,CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120)), CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120)) >= 0
+    AND DATEDIFF(DAY, CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120), ISNULL(pfv.A_END_DATE, CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120))) >= 0 
+    AND ISNULL(pfv.A_STATUS, 10) = 10
+  WHERE pfu.A_CODE = 'childPos_liquidation'
+    AND ISNULL(pfu.A_STATUS, 10) = 10) qq)
+
+  
+    WHEN A_CODE IN ('2', '3', '4', '5', '6', '7', '8', '9', '10', '11','12') THEN (SELECT
+        A_VALUE * ww.coeff
+      FROM (SELECT pfv.A_VALUE
+  FROM PPR_FINANCE_UNIT pfu
+  LEFT JOIN PPR_FINANCE_VALUE pfv ON pfv.A_FINANCE_UNIT = pfu.A_ID
+    AND DATEDIFF(DAY, ISNULL(pfv.A_BEGIN_DATE,CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120)), CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120)) >= 0
+    AND DATEDIFF(DAY, CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120), ISNULL(pfv.A_END_DATE, CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120))) >= 0 
+    AND ISNULL(pfv.A_STATUS, 10) = 10
+  WHERE pfu.A_CODE = 'childPosSecondandmore'
+    AND ISNULL(pfu.A_STATUS, 10) = 10) qq)
+   
+   WHEN num = 1 THEN (SELECT
+        A_VALUE * ww.coeff
+      FROM (SELECT pfv.A_VALUE
+  FROM PPR_FINANCE_UNIT pfu
+  LEFT JOIN PPR_FINANCE_VALUE pfv ON pfv.A_FINANCE_UNIT = pfu.A_ID
+    AND DATEDIFF(DAY, ISNULL(pfv.A_BEGIN_DATE,CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120)), CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120)) >= 0
+    AND DATEDIFF(DAY, CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120), ISNULL(pfv.A_END_DATE, CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120))) >= 0 
+    AND ISNULL(pfv.A_STATUS, 10) = 10
+  WHERE pfu.A_CODE = 'childPos_liquidation'
+    AND ISNULL(pfu.A_STATUS, 10) = 10) qq)
+
+    WHEN num > 1 THEN (SELECT
+        A_VALUE * ww.coeff
+      FROM (SELECT pfv.A_VALUE
+  FROM PPR_FINANCE_UNIT pfu
+  LEFT JOIN PPR_FINANCE_VALUE pfv ON pfv.A_FINANCE_UNIT = pfu.A_ID
+    AND DATEDIFF(DAY, ISNULL(pfv.A_BEGIN_DATE,CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120)), CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120)) >= 0
+    AND DATEDIFF(DAY, CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120), ISNULL(pfv.A_END_DATE, CONVERT(DATETIME,CONVERT(VARCHAR(10),{params.startDate},120),120))) >= 0 
+    AND ISNULL(pfv.A_STATUS, 10) = 10
+  WHERE pfu.A_CODE = 'childPosSecondandmore'
+    AND ISNULL(pfu.A_STATUS, 10) = 10) qq)
+  
+  END summa
+
+FROM (SELECT DISTINCT
+  ROW_NUMBER() OVER (ORDER BY deti.BIRTHDATE ASC) num,
+  ISNULL(father.A_REGIONCOEFF, 1.0) AS coeff,
+  ISNULL(SPR_PREG.A_CODE, (case when ROW_NUMBER() OVER (ORDER BY deti.BIRTHDATE ASC)=1 then '1' else '2' end)) AS A_CODE,
+  work.OUID work
+
+FROM 
+
+
+
+WM_PETITION pet
+
+INNER JOIN WM_PERSONAL_CARD AS PC_child
+  ON /*serv*/pet.A_CHILD = PC_child.OUID
+  
+ 
+  
+LEFT JOIN SPR_FIO_NAME AS FIRSTNAME
+  ON PC_child.A_NAME = FIRSTNAME.OUID -- достаём имя
+LEFT JOIN SPR_FIO_SURNAME AS SURNAME
+  ON PC_child.SURNAME = SURNAME.OUID -- достаём фамилия
+LEFT JOIN SPR_FIO_SECONDNAME AS SECONDNAME
+  ON PC_child.A_SECONDNAME = SECONDNAME.OUID -- достаём отчество  
+left JOIN WM_ACTSOCIALCATEGORIES priznak
+inner JOIN SPR_PREG
+  ON SPR_PREG.OUID = priznak.CATEGORYOUID
+ AND SPR_PREG.A_CODE in ('1','2', '3', '4', '5', '6','7', '8', '9', '10', '11', '12')
+ 
+-- A_PREG_CODE in( 'FirstChild', 'SecondNextChild')
+  ON priznak.PERSONOUID = PC_child.OUID
+  and ISNULL(priznak.A_STATUS, 10)=10
+
+
+--LEFT JOIN SPR_PREG spr2
+--  ON spr2.OUID = priznak.CATEGORYOUID
+--  AND spr2.A_PREG_CODE = 'FirstChild'
+
+
+
+LEFT JOIN WM_RELATEDRELATIONSHIPS rod
+
+inner JOIN WM_PERSONAL_CARD father
+  ON father.OUID = rod.A_ID2
+  
+  ON rod.A_ID1 = PC_child.OUID
+  AND father.OUID = pet.A_MSPHOLDER
+  AND (rod.A_STATUS = 10
+  OR rod.A_STATUS IS NULL)
+/*{params.mspHolder}*/
+
+
+
+LEFT JOIN SPR_FIO_SURNAME F
+  ON F.OUID = father.SURNAME
+LEFT JOIN SPR_FIO_NAME I
+  ON I.OUID = father.A_NAME
+LEFT JOIN SPR_FIO_SECONDNAME O
+  ON O.OUID = father.A_SECONDNAME
+
+
+
+ 
+--дети
+left JOIN WM_RELATEDRELATIONSHIPS rodSon
+  on rodSon.ouid in (SELECT WM_RELATEDRELATIONSHIPS.ouid FROM WM_RELATEDRELATIONSHIPS
+    INNER JOIN WM_PERSONAL_CARD deti  ON WM_RELATEDRELATIONSHIPS.A_ID1 = deti.OUID
+        and DATEDIFF(DAY, deti.BIRTHDATE, PC_child.BIRTHDATE)>=0
+  WHERE  WM_RELATEDRELATIONSHIPS.A_ID2 = pet.A_MSPHOLDER/*{params.mspHolder}*/
+  AND (WM_RELATEDRELATIONSHIPS.A_STATUS = 10  OR WM_RELATEDRELATIONSHIPS.A_STATUS IS NULL)
+  AND WM_RELATEDRELATIONSHIPS.A_RELATED_RELATIONSHIP IN (SELECT   OUID  FROM SPR_GROUP_ROLE  WHERE A_COD = 'mother'  OR A_COD = 'father') )
+ 
+
+LEFT JOIN  WM_PERSONAL_CARD deti  ON rodSon.A_ID1 = deti.OUID
+
+left join WM_WORKSINFO work on work.PERSONOUID=pet.A_MSPHOLDER
+      and isnull(work.A_STATUS, 10)=10 
+      and datediff(day,isnull(work.DATEOFEMP,{params.startDate}),{params.startDate})>=0 
+      and datediff(day,{params.startDate},isnull(work.DATEOFSACKING,{params.startDate}))>=0 
+  
+    WHERE 
+--PC_child.OUID = 19221--{params.childId}
+--AND 
+pet.OUID ={params.petitionId}
+
+
+) AS ww
+
+order by num desc
