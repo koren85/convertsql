@@ -150,3 +150,6 @@ AI_FALLBACK_THRESHOLD = int(os.getenv('AI_FALLBACK_THRESHOLD', 2))
 # Настройка использования реальной БД для тестирования скриптов
 # Если False, то будет использоваться только синтаксическая проверка
 USE_REAL_DB_TESTING = os.getenv('USE_REAL_DB_TESTING', 'true').lower() == 'true'
+
+# Включить улучшенный парсер для анализа контекста параметров
+USE_IMPROVED_PARSER = True

@@ -27,11 +27,72 @@ class SQLParser:
         name = param_name.lower()
         if 'id' in name or 'ouid' in name or 'a_code' in name or 'status' in name or 'mspholder' in name:
             return 1
-        if 'date' in name or 'time' in name or 'timestamp' in name:
+        if 'date' in name or 'time' in name or 'timestamp' in name or 'reg' in name or 'period' in name:
             return "'2023-01-01'::timestamp"
         if 'code' in name:
             return "'testcode'"
         # ...добавь свои правила по необходимости
+        return None
+
+    def analyze_param_context(self, script_content, param_name):
+        """
+        Анализирует контекст параметра в SQL запросе для определения его типа
+        
+        Args:
+            script_content: Содержимое SQL скрипта
+            param_name: Имя параметра без фигурных скобок
+            
+        Returns:
+            str: Значение по умолчанию для параметра или None, если тип не определен
+        """
+        param_pattern = r'\{' + re.escape(param_name) + r'\}'
+        
+        # Шаблоны, указывающие на то, что параметр является датой
+        date_patterns = [
+            rf"{param_pattern}\s*-\s*INTERVAL",
+            rf"{param_pattern}\s*\+\s*INTERVAL",
+            rf"BETWEEN\s+\S+\s+AND\s+{param_pattern}",
+            rf"BETWEEN\s+{param_pattern}\s+AND",
+            rf"DATE_PART\s*\([^,]+,\s*{param_pattern}",
+            rf"{param_pattern}\s*::\s*(?:timestamp|date)",
+            rf"TO_DATE\s*\(\s*{param_pattern}",
+            rf"TO_TIMESTAMP\s*\(\s*{param_pattern}",
+            rf"DATE_TRUNC\s*\([^,]+,\s*{param_pattern}",
+            rf"EXTRACT\s*\([^FROM]+FROM\s+{param_pattern}"
+        ]
+        
+        for pattern in date_patterns:
+            if re.search(pattern, script_content, re.IGNORECASE):
+                print(f"[analyze_param_context] Определил параметр {param_name} как дату на основе контекста")
+                return "'2023-01-01'::timestamp"
+        
+        # Проверка на целочисленный тип по контексту
+        int_patterns = [
+            rf"{param_pattern}\s*(?:=|!=|<>|>|<|>=|<=)\s*\d+(?!\.\d+)(?!::)",
+            rf"\d+(?!\.\d+)(?!::)\s*(?:=|!=|<>|>|<|>=|<=)\s*{param_pattern}",
+            rf"{param_pattern}\s*IN\s*\(\s*\d+(?!\.\d+)",
+            rf"LIMIT\s+{param_pattern}",
+            rf"OFFSET\s+{param_pattern}"
+        ]
+        
+        for pattern in int_patterns:
+            if re.search(pattern, script_content, re.IGNORECASE):
+                print(f"[analyze_param_context] Определил параметр {param_name} как целое число на основе контекста")
+                return 1
+        
+        # Проверка на строковый тип по контексту
+        string_patterns = [
+            rf"{param_pattern}\s*(?:=|!=|<>|LIKE)\s*'[^']+'",
+            rf"'[^']+'\s*(?:=|!=|<>|LIKE)\s*{param_pattern}",
+            rf"{param_pattern}\s*IN\s*\(\s*'[^']+'",
+            rf"{param_pattern}\s*::\s*(?:varchar|text|citext)"
+        ]
+        
+        for pattern in string_patterns:
+            if re.search(pattern, script_content, re.IGNORECASE):
+                print(f"[analyze_param_context] Определил параметр {param_name} как строку на основе контекста")
+                return "'test'"
+        
         return None
 
     def replace_params(self, script_content, params_dict=None):
@@ -42,25 +103,42 @@ class SQLParser:
             params_dict = {}
         # 1. Собираем все параметры
         all_params = set(re.findall(r'\{([^\}]+)\}', script_content))
-        # 2. Получаем значения по жёсткой логике
+        
+        # 2. Анализируем контекст использования параметров
         for param in all_params:
-            val = self.get_hardcoded_param_value(param)
-            if val is not None:
-                params_dict[param] = val
-        # 3. Для остальных — пробуем через БД
+            if param not in params_dict:
+                val = self.analyze_param_context(script_content, param)
+                if val is not None:
+                    params_dict[param] = val
+                    print(f"[replace_params] На основе анализа контекста: {param} = {val}")
+        
+        # 3. Применяем жёсткие правила по имени параметра
+        for param in all_params:
+            if param not in params_dict:
+                val = self.get_hardcoded_param_value(param)
+                if val is not None:
+                    params_dict[param] = val
+                    print(f"[replace_params] По шаблону имени: {param} = {val}")
+        
+        # 4. Для остальных — пробуем через БД
         missing_params = [p for p in all_params if p not in params_dict]
         if missing_params:
             db_param_types = self.guess_param_type_from_db(script_content)
             for p in missing_params:
                 if p in db_param_types and db_param_types[p] is not None:
                     params_dict[p] = db_param_types[p]
-        # 4. Fallback на строку
+                    print(f"[replace_params] По БД схеме: {p} = {params_dict[p]}")
+        
+        # 5. Fallback на строку
         for param in all_params:
             if param not in params_dict:
                 params_dict[param] = f"'default_{param}'"
-        # 5. Подстановка
+                print(f"[replace_params] Fallback на строку: {param} = {params_dict[param]}")
+        
+        # 6. Подстановка
         for param in all_params:
             script_content = script_content.replace(f'{{{param}}}', str(params_dict[param]))
+        
         return script_content
 
     def guess_param_type_from_db(self, script_content):

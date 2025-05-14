@@ -145,44 +145,68 @@ class AIConverter:
         # Сохраняем оригинальный скрипт и параметры
         original_script = script
         
-        # Перед тестированием, найдем все параметры в скрипте
-        param_patterns = [
-            r'\{params\.([^}]+)\}',           # {params.someValue}
-            r'\{([^}]+)\}',                   # {someValue}
-            r'default_params\.([a-zA-Z0-9_]+)', # default_params.someValue
-            r'params\.([a-zA-Z0-9_]+)'         # params.someValue
-        ]
+        # Определяем, использовать ли улучшенный парсер
+        use_improved_parser = getattr(self.config, 'USE_IMPROVED_PARSER', True)
         
-        # Простая замена всех параметров на тестовые значения
-        for pattern in param_patterns:
-            matches = re.findall(pattern, script)
-            for param_name in matches:
-                test_value = '1'  # Значение по умолчанию для ID
-                
-                # Подбираем тип значения в зависимости от названия параметра
-                if 'id' in param_name.lower() or 'ouid' in param_name.lower():
-                    test_value = '1'  # ID как число
-                elif 'date' in param_name.lower():
-                    test_value = "'2023-01-01'::timestamp"  # Дата как строка
-                elif 'string' in param_name.lower() or 'text' in param_name.lower() or 'name' in param_name.lower():
-                    test_value = "'test'"  # Строковое значение
-                
-                # Формируем паттерн замены в зависимости от формата параметра
-                if pattern == param_patterns[0]:
-                    replace_pattern = f"{{params.{param_name}}}"
-                elif pattern == param_patterns[1]:
-                    replace_pattern = f"{{{param_name}}}"
-                elif pattern == param_patterns[2]:
-                    replace_pattern = f"default_params.{param_name}"
-                else:
-                    replace_pattern = f"params.{param_name}"
-                
-                # Заменяем параметр
-                print(f"Заменяем параметр '{replace_pattern}' на '{test_value}'")
-                script = script.replace(replace_pattern, test_value)
+        if use_improved_parser:
+            try:
+                # Используем улучшенный парсер с анализом контекста
+                from src.parser import SQLParser
+                parser = SQLParser(self.config)
+                script = parser.replace_params(script)
+                print("✅ Параметры заменены с использованием улучшенного анализа контекста")
+            except Exception as e:
+                print(f"❌ Ошибка при использовании улучшенного парсера: {str(e)}")
+                print("⚠️ Возвращаемся к старому методу замены параметров")
+                use_improved_parser = False
+        
+        # Если не используем улучшенный парсер, применяем старую логику
+        if not use_improved_parser:
+            # Старая логика замены параметров
+            # Перед тестированием, найдем все параметры в скрипте
+            param_patterns = [
+                r'\{params\.([^}]+)\}',           # {params.someValue}
+                r'\{([^}]+)\}',                   # {someValue}
+                r'default_params\.([a-zA-Z0-9_]+)', # default_params.someValue
+                r'params\.([a-zA-Z0-9_]+)'         # params.someValue
+            ]
+            
+            # Простая замена всех параметров на тестовые значения
+            for pattern in param_patterns:
+                matches = re.findall(pattern, script)
+                for param_name in matches:
+                    test_value = '1'  # Значение по умолчанию для ID
+                    
+                    # Подбираем тип значения в зависимости от названия параметра
+                    if 'id' in param_name.lower() or 'ouid' in param_name.lower():
+                        test_value = '1'  # ID как число
+                    elif 'date' in param_name.lower():
+                        test_value = "'2023-01-01'::timestamp"  # Дата как строка
+                    elif 'string' in param_name.lower() or 'text' in param_name.lower() or 'name' in param_name.lower():
+                        test_value = "'test'"  # Строковое значение
+                    
+                    # Формируем паттерн замены в зависимости от формата параметра
+                    if pattern == param_patterns[0]:
+                        replace_pattern = f"{{params.{param_name}}}"
+                    elif pattern == param_patterns[1]:
+                        replace_pattern = f"{{{param_name}}}"
+                    elif pattern == param_patterns[2]:
+                        replace_pattern = f"default_params.{param_name}"
+                    else:
+                        replace_pattern = f"params.{param_name}"
+                    
+                    # Заменяем параметр
+                    print(f"Заменяем параметр '{replace_pattern}' на '{test_value}'")
+                    script = script.replace(replace_pattern, test_value)
         
         # Проверяем, остались ли параметры
-        for pattern in param_patterns:
+        remaining_patterns = [
+            r'\{params\.([^}]+)\}',
+            r'\{([^}]+)\}',
+            r'default_params\.([a-zA-Z0-9_]+)',
+            r'params\.([a-zA-Z0-9_]+)'
+        ]
+        for pattern in remaining_patterns:
             if re.search(pattern, script):
                 print(f"⚠️ Внимание: в скрипте все еще есть параметры: {re.findall(pattern, script)}")
         
