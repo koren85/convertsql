@@ -127,7 +127,7 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
             'converted_size': 0
         }
 
-def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_docker_check=False, max_iterations=3, limit=None):
+def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_docker_check=False, max_iterations=3, limit=None, offset=0):
     """
     Обрабатывает пакет скриптов по конфигурации
     """
@@ -154,6 +154,7 @@ def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_dock
     parallel = batch_config.get('parallel', 4)
     params = batch_config.get('params', {})
     limit = limit or batch_config.get('limit')
+    offset = offset or batch_config.get('offset', 0)
     
     print(f"Запуск пакетной обработки: {batch_name}")
     print(f"Исходная директория: {input_dir}")
@@ -171,13 +172,20 @@ def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_dock
     # Создаем выходную директорию
     output_dir.mkdir(exist_ok=True, parents=True)
     
-    # Находим все SQL-скрипты
-    #scripts = list(input_dir.glob('*.sql'))
+    # Находим все SQL-скрипты и сортируем по имени
     scripts = sorted(input_dir.glob('*.sql'), key=lambda p: p.name)
+    
+    # Применяем offset (пропускаем первые N файлов)
+    if offset > 0:
+        scripts = scripts[offset:]
+        print(f"Пропущено первых {offset} файлов")
+    
+    # Применяем limit (ограничиваем количество)    
     if limit is not None:
         scripts = scripts[:limit]
+        
     if not scripts:
-        print(f"В директории {input_dir} не найдено SQL-скриптов")
+        print(f"В директории {input_dir} не найдено SQL-скриптов после применения offset/limit")
         return False
     
     print(f"Найдено {len(scripts)} SQL-скриптов для обработки")
@@ -270,6 +278,7 @@ def main():
     parser.add_argument('--skip-docker-check', action='store_true', help='Не проверять Docker')
     parser.add_argument('--max-iterations', type=int, default=3, help='Максимум итераций AI-конвертации')
     parser.add_argument('--limit', type=int, default=None, help='Максимальное количество файлов для обработки')
+    parser.add_argument('--offset', type=int, default=0, help='Пропустить первые N файлов и начать с (N+1)-го')
     
     args = parser.parse_args()
     
@@ -280,7 +289,7 @@ def main():
         return 1
     
     # Запускаем пакетную обработку
-    success = process_batch(config_file, args.verbose, args.provider, args.skip_docker_check, args.max_iterations, args.limit)
+    success = process_batch(config_file, args.verbose, args.provider, args.skip_docker_check, args.max_iterations, args.limit, args.offset)
     
     return 0 if success else 1
 

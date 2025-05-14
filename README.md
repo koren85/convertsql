@@ -403,8 +403,11 @@ python batch_process.py configs/config.yaml --skip-docker-check --verbose
 - `--provider anthropic` — явно указать провайдера (перекроет значение из yaml)
 - `--max-iterations 3` — максимальное число итераций AI-конвертации (перекроет значение из yaml)
 - `--limit 100` — ограничить количество обрабатываемых файлов (перекроет значение из yaml)
+- `--offset 50` — пропустить первые N файлов (перекроет значение из yaml)
 
 **Параметр `limit`** позволяет ограничить количество файлов для пакетной обработки (например, для теста на подмножестве файлов). Можно задать как через CLI (`--limit 100`), так и в yaml-конфиге (`limit: 100`). Если указаны оба, приоритет у CLI.
+
+**Параметр `offset`** позволяет пропустить первые N файлов и начать обработку с (N+1)-го файла. Можно задать как через CLI (`--offset 50`), так и в yaml-конфиге (`offset: 50`). Удобно для продолжения обработки с определенного места.
 
 **После завершения обработки:**
 - Все сконвертированные скрипты будут в директории, указанной в `output_dir`.
@@ -423,6 +426,7 @@ generate_html_report: true
 ai_provider: anthropic
 max_iterations: 3
 limit: 100  # ограничить количество файлов (опционально)
+offset: 0   # пропустить первые N файлов (опционально)
 params:
   startDate: "'2023-01-01'"
   endDate: "'2023-12-31'"
@@ -433,7 +437,7 @@ params:
   minSalesAmount: "1000"
 ```
 
-- `ai_provider`, `max_iterations`, `limit` можно не указывать, если задаёте их через CLI.
+- `ai_provider`, `max_iterations`, `limit`, `offset` можно не указывать, если задаёте их через CLI.
 - `params` — параметры для подстановки в скрипты.
 
 ## Примеры команд
@@ -451,6 +455,16 @@ python batch_process.py configs/config.yaml --skip-docker-check --verbose
 **Пакетная обработка с ограничением по количеству файлов:**
 ```bash
 python batch_process.py configs/config.yaml --limit 100 --skip-docker-check --verbose
+```
+
+**Пакетная обработка со смещением (пропуск первых 50 файлов):**
+```bash
+python batch_process.py configs/config.yaml --offset 50 --skip-docker-check --verbose
+```
+
+**Пакетная обработка с ограничением и смещением (обработка файлов с 51 по 150):**
+```bash
+python batch_process.py configs/config.yaml --offset 50 --limit 100 --skip-docker-check --verbose
 ```
 
 **Пакетная обработка с явным указанием провайдера и числа итераций:**
