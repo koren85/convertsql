@@ -137,6 +137,11 @@ class SQLParser:
             param = m.group(1)
             params_dict[param] = 1
             print(f"[replace_params] THEN {{{param}}} -> 1")
+        # 0.3. Если параметр {PPRCONST.*} участвует в арифметике — подставлять 1
+        for m in re.finditer(r'[\+\-\*/]\s*\{(PPRCONST\.[^\}]+)\}|\{(PPRCONST\.[^\}]+)\}\s*[\+\-\*/]', script_content):
+            param = m.group(1) or m.group(2)
+            params_dict[param] = 1
+            print(f"[replace_params] Арифметика с {{{param}}} -> 1")
         # 1. Собираем все параметры
         all_params = set(re.findall(r'\{([^\}]+)\}', script_content))
         
