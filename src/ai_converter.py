@@ -43,12 +43,46 @@ class AIConverter:
             'postgresql://username:password@localhost:5432/test_db'
         )
         
-    def should_skip_conversion(self, script: str) -> Tuple[bool, str]:
+    def extract_sql_text(self, script):
+        """
+        Извлекает текст SQL из различных форматов входящего объекта.
+        
+        Args:
+            script: Входной объект (строка или словарь)
+            
+        Returns:
+            str: Текст SQL-запроса
+        """
+        if isinstance(script, dict):
+            # Если есть ключ 'original', используем его (это наиболее вероятный вариант из парсера)
+            if 'original' in script:
+                return script['original']
+            # Если есть ключ 'text', используем его
+            elif 'text' in script:
+                return script['text']
+            # Если есть ключ 'sql', используем его
+            elif 'sql' in script:
+                return script['sql']
+            # Если есть ключ 'script', используем его
+            elif 'script' in script:
+                return script['script']
+            # Если есть ключ 'statements', пробуем объединить все запросы
+            elif 'statements' in script and isinstance(script['statements'], list):
+                return '\n'.join(script['statements'])
+            # В остальных случаях возвращаем строковое представление словаря
+            else:
+                print(f"Предупреждение: script - это словарь, но не содержит ожидаемых ключей. Доступные ключи: {list(script.keys())}")
+                return str(script)
+        else:
+            # Если это строка, возвращаем как есть
+            return script
+        
+    def should_skip_conversion(self, script) -> Tuple[bool, str]:
         """
         Проверяет, следует ли пропустить конвертацию скрипта на основе определенных паттернов.
         
         Args:
-            script: Содержимое скрипта для проверки
+            script: Содержимое скрипта для проверки (может быть строкой или словарем)
             
         Returns:
             Tuple[bool, str]: (нужно_пропустить, причина_пропуска)
@@ -62,28 +96,40 @@ class AIConverter:
             # Содержит специфические функции
             (r'SQL\.equalBeforeInDay', 'Скрипт содержит специфическую функцию SQL.equalBeforeInDay'),
             
+            # Содержит конкретные SQL.* паттерны
+            (r'SQL\.endMonth', 'Скрипт содержит специфическую функцию SQL.endMonth'),
+            (r'SQL\.addYear', 'Скрипт содержит специфическую функцию SQL.addYear'),
+            (r'SQL\.getDate', 'Скрипт содержит специфическую функцию SQL.getDate'),
+            (r'SQL\.getYearOld', 'Скрипт содержит специфическую функцию SQL.getYearOld'),
+            
+            # Общий паттерн для всех SQL.* функций
+            (r'\{SQL\.[^\}]+\}', 'Скрипт содержит динамические SQL-функции вида {SQL.*}'),
+            
             # Содержит специфические параметры
-            #(r'DOC\.[a-zA-Z]+', 'Скрипт содержит динамические параметры вида DOC.*'),
+            (r'ALG\.[a-zA-Z]+', 'Скрипт содержит динамические параметры вида ALG.*'),
             
             # Другие шаблоны, которые можно добавить позже...
             # (r'другой_паттерн', 'другое_сообщение'),
         ]
         
+        # Извлекаем текст скрипта
+        script_text = self.extract_sql_text(script)
+
         # Проверяем каждый паттерн
         for pattern, message in patterns:
-            if re.search(pattern, script):
+            if re.search(pattern, script_text):
                 return True, message
         
         # Ничего не найдено
         return False, ""
         
-    def convert_with_ai(self, original_script: str, error_message: str = None, 
+    def convert_with_ai(self, original_script, error_message: str = None, 
                          max_iterations: int = 3) -> Tuple[bool, str, str]:
         """
         Конвертирует скрипт используя нейросеть с возможностью нескольких итераций
         
         Args:
-            original_script: Исходный MS SQL скрипт
+            original_script: Исходный MS SQL скрипт (может быть строкой или словарем)
             error_message: Сообщение об ошибке из PostgreSQL, если есть
             max_iterations: Максимальное количество итераций для проверки и исправления
             
@@ -95,7 +141,12 @@ class AIConverter:
             should_skip, skip_reason = self.should_skip_conversion(original_script)
             if should_skip:
                 print(f"\n⚠️ Скрипт требует ручной обработки: {skip_reason}")
-                return False, original_script, f"Скрипт требует ручной обработки: {skip_reason}"
+                # Извлекаем текст скрипта
+                script_text = self.extract_sql_text(original_script)
+                return False, script_text, f"Скрипт требует ручной обработки: {skip_reason}"
+            
+            # Извлекаем текст скрипта
+            script_text = self.extract_sql_text(original_script)
             
             # Определяем какой API использовать из конфигурации
             ai_provider = getattr(self.config, 'AI_PROVIDER', 'openai').lower()
@@ -104,14 +155,14 @@ class AIConverter:
             
             # Первичная конвертация
             if ai_provider == 'openai':
-                success, converted_script, message = self._convert_with_openai(original_script, error_message)
+                success, converted_script, message = self._convert_with_openai(script_text, error_message)
             elif ai_provider == 'anthropic':
-                success, converted_script, message = self._convert_with_anthropic(original_script, error_message)
+                success, converted_script, message = self._convert_with_anthropic(script_text, error_message)
             else:
-                return False, original_script, f"Неизвестный провайдер AI: {ai_provider}"
+                return False, script_text, f"Неизвестный провайдер AI: {ai_provider}"
             
             if not success:
-                return False, original_script, message
+                return False, script_text, message
             
             print(f"✅ Первичная конвертация успешно выполнена")
             
@@ -168,7 +219,9 @@ class AIConverter:
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return False, original_script, f"Ошибка при конвертации: {str(e)}"
+            # Извлекаем текст скрипта
+            script_text = self.extract_sql_text(original_script)
+            return False, script_text, f"Ошибка при конвертации: {str(e)}"
     
     def _test_script_in_postgres(self, script: str) -> Tuple[bool, str]:
         """
