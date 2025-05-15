@@ -9,3 +9,6 @@ pyyaml==6.0.1
 python-dotenv==1.0.0
 tabulate==0.9.0
 pyodbc==5.1.0
+sqlglot>=24.0.0
+parsimonious>=0.10.0  # Опционально
+pglast>=6.1.0  # Опционально для PostgreSQL

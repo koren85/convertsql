@@ -1,0 +1,74 @@
+select
+min(dateadd(month,1,DATE_TRUNC('month', db)::timestamp)-1) /* [изменено]: dateadd(day,1-day(db),db) -> DATE_TRUNC('month', db)::timestamp */
+ from 
+(
+		/* теряется статус многодетной семьи (несовершеннолетних детей осталось 2)*/
+			select db from (
+		/* дети льготодержателя*/
+		select ROW_NUMBER() OVER(ORDER BY db desc) AS Row, id, db from
+		(
+		(select  wr.A_ID2 as id,
+		 (wmc1.birthdate + interval '18 year') as db /* [изменено]: dateadd(year,18,wmc1.birthdate) -> (wmc1.birthdate + interval '18 year') */
+		 from WM_PERSONAL_CARD wmc 
+		inner join WM_RELATEDRELATIONSHIPS wr on wr.A_ID1=wmc.OUID and wr.A_RELATED_RELATIONSHIP in (select ouid from SPR_GROUP_ROLE where A_COD in ('son','daughter','stepson','stepdaughter') )
+		inner join WM_PERSONAL_CARD wmc1 on wmc1.OUID=wr.a_id2 and wmc1.BIRTHDATE<COALESCE({params.dateRecalc},{params.startDate}) /* [изменено]: isnull -> COALESCE */
+		and COALESCE(wmc1.A_DEATHDATE,COALESCE({params.dateRecalc},{params.startDate}))>=COALESCE({params.dateRecalc},{params.startDate}) /* [изменено]: ISNULL -> COALESCE */
+		where wmc.ouid={params.reciever} and wr.a_status = (select A_ID from ESRN_SERV_STATUS where A_STATUSCODE = 'act'))		
+		/* опекаемые льготодержателя*/
+				union
+		(
+		select wic.A_PC_CITIZEN as id, 	
+		 case when (wmc1.birthdate + interval '18 year') <= COALESCE(wic.A_INCAP_P_END,(wmc1.birthdate + interval '18 year')) /* [изменено]: dateadd(year,18,wmc1.birthdate) -> (wmc1.birthdate + interval '18 year') */
+		 then (wmc1.birthdate + interval '18 year') else wic.A_INCAP_P_END end /* [изменено]: dateadd(year,18,wmc1.birthdate) -> (wmc1.birthdate + interval '18 year') */
+		 as db from WM_PERSONAL_CARD wmc 
+		inner join WM_INCAPABLE_CITIZEN wic on wic.A_PC_TUTOR=wmc.ouid
+		inner join WM_ACTDOCUMENTS wa1 on wic.A_DOC=wa1.OUID 
+		 and wa1.A_STATUS=(select A_ID from ESRN_SERV_STATUS where A_STATUSCODE = 'act') 
+		 and wa1.A_DOCSTATUS = (select A_OUID from SPR_DOC_STATUS where A_CODE = 'active')
+		 and wa1.DOCUMENTSTYPE=(select A_ID from PPR_DOC where A_CODE='decisionGuardingChild' LIMIT 1) /* [изменено]: top 1 -> LIMIT 1 */
+		inner join WM_PERSONAL_CARD wmc1 on wmc1.OUID=wic.A_PC_CITIZEN and wmc1.BIRTHDATE<COALESCE({params.dateRecalc},{params.startDate}) /* [изменено]: isnull -> COALESCE */
+		and COALESCE(wmc1.A_DEATHDATE,COALESCE({params.dateRecalc},{params.startDate}))>=COALESCE({params.dateRecalc},{params.startDate}) /* [изменено]: ISNULL -> COALESCE */
+		where wmc.ouid={params.reciever} and wic.A_STATUS=(select A_ID from ESRN_SERV_STATUS where A_STATUSCODE = 'act')
+		) ) t
+		) t1 
+		where ROW=3
+		
+		/* дата окончания иждивения ребенка*/
+		union
+		
+		(select 
+		case when (wmc.birthdate + interval '18 year') > ws.ENDDATE then ws.ENDDATE else (wmc.birthdate + interval '18 year') /* [изменено]: DATEADD(YEAR,18, wmc.birthdate) -> (wmc.birthdate + interval '18 year') */
+		end
+		as db
+		 from WM_PERSONAL_CARD wmc
+		inner join WM_RELATEDRELATIONSHIPS wr on wr.A_ID1=wmc.OUID and wr.A_RELATED_RELATIONSHIP in (select ouid from SPR_GROUP_ROLE where A_COD in ('mother','father') ) 
+		left join WM_ACTDOCUMENTS wa on wa.PERSONOUID=wmc.OUID 
+		and wa.A_STATUS=(select A_ID from ESRN_SERV_STATUS where A_STATUSCODE = 'act') 
+		and wa.A_DOCSTATUS = (select A_OUID from SPR_DOC_STATUS where A_CODE = 'active')
+		and wa.DOCUMENTSTYPE=(select A_ID from PPR_DOC where A_CODE='childSchoolStudy') 
+		left join WM_STUDY ws on ws.ouid=wa.A_STUDY and ws.A_STATUS=(select A_ID from ESRN_SERV_STATUS where A_STATUSCODE = 'act')
+		where wmc.OUID={params.childId}
+		)
+			
+		/* дата окончания иждивения опекаемого*/
+		union 
+		(select 
+		
+		case when
+		(case when (wmc.birthdate + interval '18 year') > ws.ENDDATE then ws.ENDDATE else (wmc.birthdate + interval '18 year') /* [изменено]: DATEADD(YEAR,18, wmc.birthdate) -> (wmc.birthdate + interval '18 year') */
+		end) > wic.A_INCAP_P_END then wic.A_INCAP_P_END 
+		else (case when (wmc.birthdate + interval '18 year') > ws.ENDDATE then ws.ENDDATE else (wmc.birthdate + interval '18 year') /* [изменено]: DATEADD(YEAR,18, wmc.birthdate) -> (wmc.birthdate + interval '18 year') */
+		end)
+		end
+		as db
+		 from WM_PERSONAL_CARD wmc
+		inner join WM_INCAPABLE_CITIZEN wic on wic.A_PC_CITIZEN=wmc.ouid  and wic.A_STATUS=(select A_ID from ESRN_SERV_STATUS where A_STATUSCODE = 'act') 		
+		inner join WM_ACTDOCUMENTS wa1 on wic.A_DOC=wa1.OUID and wa1.DOCUMENTSTYPE=(select A_ID from PPR_DOC where A_CODE='decisionGuardingChild' LIMIT 1) /* [изменено]: top 1 -> LIMIT 1 */
+		left join WM_ACTDOCUMENTS wa on wa.PERSONOUID=wmc.OUID 
+		and wa.A_STATUS=(select A_ID from ESRN_SERV_STATUS where A_STATUSCODE = 'act')
+		and wa.A_DOCSTATUS = (select A_OUID from SPR_DOC_STATUS where A_CODE = 'active')
+		and wa.DOCUMENTSTYPE=(select A_ID from PPR_DOC where A_CODE='childSchoolStudy') 
+		left join WM_STUDY ws on ws.ouid=wa.A_STUDY and ws.A_STATUS=(select A_ID from ESRN_SERV_STATUS where A_STATUSCODE = 'act')
+		where wmc.ouid={params.childId}
+		)
+		)table1
