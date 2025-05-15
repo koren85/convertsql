@@ -92,6 +92,7 @@ class AIConverter:
         patterns = [
             # Скрипт начинается с CASE
             (r'^\s*CASE\s+WHEN', 'Скрипт начинается с CASE WHEN и может быть частью более крупного скрипта'),
+            (r'^\s*case', 'Скрипт начинается с CASE (любой регистр) и может быть фрагментом'),
             
             # Содержит специфические функции
             (r'SQL\.equalBeforeInDay', 'Скрипт содержит специфическую функцию SQL.equalBeforeInDay'),
@@ -117,7 +118,7 @@ class AIConverter:
 
         # Проверяем каждый паттерн
         for pattern, message in patterns:
-            if re.search(pattern, script_text):
+            if re.search(pattern, script_text, re.IGNORECASE):
                 return True, message
         
         # Ничего не найдено
