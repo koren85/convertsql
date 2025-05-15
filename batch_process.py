@@ -53,6 +53,24 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
         success, converted_script, message = converter.convert_with_ai(parsed_script, error_message=None, max_iterations=max_iterations)
         if orig_provider is not None:
             config.AI_PROVIDER = orig_provider
+            
+        # Проверяем, требуется ли ручная обработка
+        requires_manual = False
+        if not success and "требует ручной обработки" in message:
+            requires_manual = True
+            if verbose:
+                print(f"⚠️ {script_name}: {message}")
+            logger.log_script_processing(script_name, 'conversion', 'skipped', message)
+            return {
+                'script': script_name,
+                'success': False,
+                'error': message,
+                'manual_processing': True,
+                'retries': 0,
+                'original_size': len(script_content),
+                'converted_size': len(converted_script)
+            }
+            
         # logger.log_script_processing(script_name, 'conversion', 'success' if success else 'failed', message)
         
         # Заменяем параметры на значения
@@ -106,7 +124,8 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
         return {
             'script': script_name,
             'success': test_success and success,
-            'error': last_error if not test_success or not success else None,
+            'error': last_error or message if not test_success or not success else None,
+            'manual_processing': requires_manual,
             'retries': retries,
             'original_size': len(script_content),
             'converted_size': len(converted_script)
@@ -122,6 +141,7 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
             'script': script_name,
             'success': False,
             'error': error_msg,
+            'manual_processing': False,
             'retries': 0,
             'original_size': 0,
             'converted_size': 0
@@ -249,8 +269,8 @@ def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_dock
         'results': results
     }
     
-    with open(report_path, 'w') as f:
-        json.dump(report, f, indent=2)
+    with open(report_path, 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
     
     print(f"Отчет сохранен в {report_path}")
     

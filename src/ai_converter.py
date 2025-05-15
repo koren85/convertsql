@@ -610,7 +610,7 @@ class AIConverter:
 11. Если встречается выражение dateadd(day, 1-day(X), X), то замени его на DATE_TRUNC('month', X)::timestamp (например, dateadd(day, 1-day(wan.A_DATE_REG), wan.A_DATE_REG) -> DATE_TRUNC('month', wan.A_DATE_REG)::timestamp)
 12. Все выражения DATEDIFF(DAY, X, Y) и DATEDIFF('day', X, Y) конвертируй в DATE_PART('day', Y - X). Если X или Y содержит ISNULL(...), замени ISNULL на COALESCE.
 13. Если требуется обнулить время у даты (например, CONVERT(DATETIME, CONVERT(VARCHAR(10), ...))), всегда используй DATE_TRUNC('day', ...) без ::timestamp, ::date, TO_TIMESTAMP и других преобразований. Не добавляй ::timestamp к параметрам, если задача — оставить только дату.
-
+14. Если встречается выражение ROUND(X, Y), то учти что аргумент X должен быть приведён к типу numeric.
 
 
 Если в запросе есть COALESCE с разными типами, явно указывай приведение типов.
