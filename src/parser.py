@@ -127,6 +127,16 @@ class SQLParser:
             params_dict[p1] = 1
             params_dict[p2] = 1
             print(f"[replace_params] Сравнение двух параметров: {p1} = {p2} -> 1 = 1")
+        # 0.1. Спецобработка: если есть {PPRCONST.EdDV1y}, {PPRCONST.EdDV2y}, {PPRCONST.EdDV3y} — всегда подставлять 1
+        for eddv in ['PPRCONST.EdDV1y', 'PPRCONST.EdDV2y', 'PPRCONST.EdDV3y']:
+            if f'{{{eddv}}}' in script_content:
+                params_dict[eddv] = 1
+                print(f"[replace_params] Спец: {eddv} -> 1")
+        # 0.2. Спецобработка: если есть конструкции THEN {PPRCONST.*} — подставлять 1
+        for m in re.finditer(r'THEN\s*\{(PPRCONST\.[^\}]+)\}', script_content):
+            param = m.group(1)
+            params_dict[param] = 1
+            print(f"[replace_params] THEN {{{param}}} -> 1")
         # 1. Собираем все параметры
         all_params = set(re.findall(r'\{([^\}]+)\}', script_content))
         
