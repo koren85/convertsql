@@ -43,6 +43,40 @@ class AIConverter:
             'postgresql://username:password@localhost:5432/test_db'
         )
         
+    def should_skip_conversion(self, script: str) -> Tuple[bool, str]:
+        """
+        Проверяет, следует ли пропустить конвертацию скрипта на основе определенных паттернов.
+        
+        Args:
+            script: Содержимое скрипта для проверки
+            
+        Returns:
+            Tuple[bool, str]: (нужно_пропустить, причина_пропуска)
+        """
+        # Список паттернов, которые указывают на то, что скрипт может быть частью 
+        # более крупного скрипта или требует ручной обработки
+        patterns = [
+            # Скрипт начинается с CASE
+            (r'^\s*CASE\s+WHEN', 'Скрипт начинается с CASE WHEN и может быть частью более крупного скрипта'),
+            
+            # Содержит специфические функции
+            (r'SQL\.equalBeforeInDay', 'Скрипт содержит специфическую функцию SQL.equalBeforeInDay'),
+            
+            # Содержит специфические параметры
+            #(r'DOC\.[a-zA-Z]+', 'Скрипт содержит динамические параметры вида DOC.*'),
+            
+            # Другие шаблоны, которые можно добавить позже...
+            # (r'другой_паттерн', 'другое_сообщение'),
+        ]
+        
+        # Проверяем каждый паттерн
+        for pattern, message in patterns:
+            if re.search(pattern, script):
+                return True, message
+        
+        # Ничего не найдено
+        return False, ""
+        
     def convert_with_ai(self, original_script: str, error_message: str = None, 
                          max_iterations: int = 3) -> Tuple[bool, str, str]:
         """
@@ -57,6 +91,12 @@ class AIConverter:
             Tuple[bool, str, str]: (успех, сконвертированный скрипт, сообщение)
         """
         try:
+            # Проверяем, нужно ли пропустить конвертацию
+            should_skip, skip_reason = self.should_skip_conversion(original_script)
+            if should_skip:
+                print(f"\n⚠️ Скрипт требует ручной обработки: {skip_reason}")
+                return False, original_script, f"Скрипт требует ручной обработки: {skip_reason}"
+            
             # Определяем какой API использовать из конфигурации
             ai_provider = getattr(self.config, 'AI_PROVIDER', 'openai').lower()
             

@@ -25,6 +25,12 @@ class SQLParser:
     
     def get_hardcoded_param_value(self, param_name):
         name = param_name.lower()
+        
+        # Специальная обработка для DOC.* параметров 
+        if name.startswith('doc.'):
+            # Для параметров DOC.* (которые обычно используются в IN) возвращаем (1,1)
+            return "(1,1)"
+            
         if 'id' in name or 'ouid' in name or 'a_code' in name or 'status' in name or 'mspholder' in name:
             return 1
         if 'date' in name or 'time' in name or 'timestamp' in name or 'reg' in name or 'period' in name:
@@ -45,7 +51,19 @@ class SQLParser:
         Returns:
             str: Значение по умолчанию для параметра или None, если тип не определен
         """
+        # Проверка специальных параметров DOC.* на основе имени
+        if param_name.lower().startswith('doc.'):
+            print(f"[analyze_param_context] Определил параметр {param_name} как DOC.* для IN-конструкции")
+            return "(1,1)"
+            
         param_pattern = r'\{' + re.escape(param_name) + r'\}'
+        
+        # Проверка контекста использования - особенно для IN-конструкций
+        in_pattern = rf"\bIN\s+{param_pattern}"
+        if re.search(in_pattern, script_content, re.IGNORECASE):
+            print(f"[analyze_param_context] Определил параметр {param_name} для IN-конструкции")
+            # Если параметр используется в конструкции IN, подставляем список из одного значения
+            return "(1)"
         
         # Шаблоны, указывающие на то, что параметр является датой
         date_patterns = [
