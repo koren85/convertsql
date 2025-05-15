@@ -119,6 +119,14 @@ class SQLParser:
         """
         if params_dict is None:
             params_dict = {}
+        # 0. Спецобработка: если есть сравнение двух параметров — оба подставлять как 1
+        param_cmp_pattern = r'(\{params\.[^\}]+\})\s*=\s*(\{params\.[^\}]+\})'
+        for m in re.finditer(param_cmp_pattern, script_content):
+            p1 = m.group(1)[1:-1]  # убираем {}
+            p2 = m.group(2)[1:-1]
+            params_dict[p1] = 1
+            params_dict[p2] = 1
+            print(f"[replace_params] Сравнение двух параметров: {p1} = {p2} -> 1 = 1")
         # 1. Собираем все параметры
         all_params = set(re.findall(r'\{([^\}]+)\}', script_content))
         
