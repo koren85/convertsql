@@ -233,15 +233,22 @@ class SQLParser:
             alias_map = {}
         print(f"[guess_param_type_from_db] alias_map: {alias_map}")
         # --- Конец блока alias_map ---
+        # Новый универсальный паттерн: ищет field op {param} и {param} op field
+        pattern = r'([a-zA-Z_][\w\.]*)\s*(=|<|>|<=|>=|!=|<>)\s*\{([^\}]+)\}|\{([^\}]+)\}\s*(=|<|>|<=|>=|!=|<>)\s*([a-zA-Z_][\w\.]*)'
         for match in re.finditer(pattern, script_content):
-            field_expr, param_name = match.groups()
+            if match.group(1) and match.group(3):
+                field_expr, param_name = match.group(1), match.group(3)
+            elif match.group(4) and match.group(6):
+                field_expr, param_name = match.group(6), match.group(4)
+            else:
+                continue
+            if param_name in param_types:
+                continue
             if '.' in field_expr:
                 alias, field = field_expr.split('.', 1)
                 table = alias_map.get(alias, alias)  # если алиас не найден — fallback на alias
             else:
                 table, field = None, field_expr
-            if param_name in param_types:
-                continue
             col_type = None
             if table:
                 try:
@@ -261,7 +268,9 @@ class SQLParser:
             if col_type is not None:
                 if col_type in ('integer', 'bigint', 'smallint'):
                     param_types[param_name] = 1
-                elif col_type in ('character varying', 'text', 'varchar'):
+                elif col_type in ('double precision', 'numeric', 'real', 'float', 'decimal'):
+                    param_types[param_name] = 1.0
+                elif col_type in ('character varying', 'text', 'varchar', 'citext'):
                     param_types[param_name] = "'test'"
                 elif col_type in ('date',):
                     param_types[param_name] = "'2023-01-01'::date"
