@@ -13,6 +13,7 @@ import tempfile
 from typing import Dict, Any, Optional, Tuple, List
 from pathlib import Path
 from dotenv import load_dotenv
+from src.sql_alias_analyzer import SQLAliasAnalyzer
 
 # Загружаем переменные из .env файла
 env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -42,6 +43,8 @@ class AIConverter:
             'PG_CONNECTION_STRING', 
             'postgresql://username:password@localhost:5432/test_db'
         )
+        # Инициализируем анализатор алиасов SQL
+        self.alias_analyzer = SQLAliasAnalyzer()
         
     def extract_sql_text(self, script):
         """
@@ -247,6 +250,15 @@ class AIConverter:
                 # Используем улучшенный парсер с анализом контекста
                 from src.parser import SQLParser
                 parser = SQLParser(self.config)
+                # Анализируем алиасы таблиц перед заменой параметров
+                table_aliases = self.alias_analyzer.get_table_aliases(script)
+                print("\n✅ Анализ алиасов таблиц:")
+                for table, aliases in table_aliases.items():
+                    if aliases:
+                        print(f"  {table}: {', '.join(aliases)}")
+                    else:
+                        print(f"  {table}: Нет алиаса")
+                        
                 script = parser.replace_params(script)
                 print("✅ Параметры заменены с использованием улучшенного анализа контекста")
             except Exception as e:

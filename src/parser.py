@@ -1,10 +1,12 @@
 import re
 import sqlparse
 import psycopg2
+from src.sql_alias_analyzer import SQLAliasAnalyzer
 
 class SQLParser:
     def __init__(self, config):
         self.config = config
+        self.alias_analyzer = SQLAliasAnalyzer()
         
     def parse_script(self, script_content):
         """
@@ -42,60 +44,54 @@ class SQLParser:
 
     def analyze_param_context(self, script_content, param_name):
         """
-        Анализирует контекст параметра в SQL запросе для определения его типа
+        Анализирует контекст использования параметра в скрипте для определения его типа
         
         Args:
-            script_content: Содержимое SQL скрипта
+            script_content: Скрипт, в котором используется параметр
             param_name: Имя параметра без фигурных скобок
             
         Returns:
-            str: Значение по умолчанию для параметра или None, если тип не определен
+            str or None: Предполагаемое значение параметра или None, если тип не определён
         """
-        # Проверка специальных параметров DOC.* на основе имени
-        if param_name.lower().startswith('doc.'):
-            print(f"[analyze_param_context] Определил параметр {param_name} как DOC.* для IN-конструкции")
-            return "(1,1)"
-            
+        # Создаем паттерн для поиска параметра в скрипте
         param_pattern = r'\{' + re.escape(param_name) + r'\}'
         
-        # Проверка контекста использования - особенно для IN-конструкций
-        in_pattern = rf"\bIN\s+{param_pattern}"
-        if re.search(in_pattern, script_content, re.IGNORECASE):
-            print(f"[analyze_param_context] Определил параметр {param_name} для IN-конструкции")
-            # Если параметр используется в конструкции IN, подставляем список из одного значения
-            return "(1)"
-        
-        # Шаблоны, указывающие на то, что параметр является датой
-        date_patterns = [
-            rf"{param_pattern}\s*-\s*INTERVAL",
-            rf"{param_pattern}\s*\+\s*INTERVAL",
-            rf"BETWEEN\s+\S+\s+AND\s+{param_pattern}",
-            rf"BETWEEN\s+{param_pattern}\s+AND",
-            rf"DATE_PART\s*\([^,]+,\s*{param_pattern}",
-            rf"{param_pattern}\s*::\s*(?:timestamp|date)",
-            rf"TO_DATE\s*\(\s*{param_pattern}",
-            rf"TO_TIMESTAMP\s*\(\s*{param_pattern}",
-            rf"DATE_TRUNC\s*\([^,]+,\s*{param_pattern}",
-            rf"EXTRACT\s*\([^FROM]+FROM\s+{param_pattern}"
+        # Используем SQLAliasAnalyzer для поиска контекста параметра
+        # Ищем паттерны вида alias.column = {param_name}
+        column_param_pattern = rf'([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*=\s*{param_pattern}|{param_pattern}\s*=\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)'
+        for match in re.finditer(column_param_pattern, script_content):
+            if match.group(1) and match.group(2):  # alias.column = {param}
+                alias, column = match.group(1), match.group(2)
+            else:  # {param} = alias.column
+                alias, column = match.group(3), match.group(4)
+            
+            # Определяем таблицу по алиасу
+            table = self.alias_analyzer.get_table_by_alias(script_content, alias)
+            if table:
+                print(f"[analyze_param_context] Найден контекст: {param_name} сравнивается с {alias}.{column} (таблица: {table})")
+                
+                # По имени колонки определяем тип параметра
+                if any(id_term in column.lower() for id_term in ['id', 'ouid', 'code', 'status', 'mspholder']):
+                    print(f"[analyze_param_context] Колонка {column} похожа на ID, возвращаем 1")
+                    return 1
+                elif any(date_term in column.lower() for date_term in ['date', 'time', 'reg', 'period']):
+                    print(f"[analyze_param_context] Колонка {column} похожа на дату, возвращаем timestamp")
+                    return "'2023-01-01'::timestamp"
+                elif 'name' in column.lower() or 'text' in column.lower():
+                    print(f"[analyze_param_context] Колонка {column} похожа на текст, возвращаем строку")
+                    return "'test'"
+                
+        # Проверка на числовой тип параметра
+        number_patterns = [
+            rf"{param_pattern}\s*(?:=|!=|<>|>|<|>=|<=)\s*\d+",
+            rf"\d+\s*(?:=|!=|<>|>|<|>=|<=)\s*{param_pattern}",
+            rf"{param_pattern}\s*IN\s*\(\s*\d+",
+            rf"{param_pattern}\s*::\s*(?:integer|bigint|smallint|numeric|decimal|int)"
         ]
         
-        for pattern in date_patterns:
+        for pattern in number_patterns:
             if re.search(pattern, script_content, re.IGNORECASE):
-                print(f"[analyze_param_context] Определил параметр {param_name} как дату на основе контекста")
-                return "'2023-01-01'::timestamp"
-        
-        # Проверка на целочисленный тип по контексту
-        int_patterns = [
-            rf"{param_pattern}\s*(?:=|!=|<>|>|<|>=|<=)\s*\d+(?!\.\d+)(?!::)",
-            rf"\d+(?!\.\d+)(?!::)\s*(?:=|!=|<>|>|<|>=|<=)\s*{param_pattern}",
-            rf"{param_pattern}\s*IN\s*\(\s*\d+(?!\.\d+)",
-            rf"LIMIT\s+{param_pattern}",
-            rf"OFFSET\s+{param_pattern}"
-        ]
-        
-        for pattern in int_patterns:
-            if re.search(pattern, script_content, re.IGNORECASE):
-                print(f"[analyze_param_context] Определил параметр {param_name} как целое число на основе контекста")
+                print(f"[analyze_param_context] Определил параметр {param_name} как число на основе контекста")
                 return 1
         
         # Проверка на строковый тип по контексту
@@ -119,6 +115,19 @@ class SQLParser:
         """
         if params_dict is None:
             params_dict = {}
+            
+        # Анализируем алиасы таблиц для лучшего понимания контекста параметров
+        table_aliases = self.alias_analyzer.get_table_aliases(script_content)
+        column_to_table = self.alias_analyzer.get_column_to_table_mapping(script_content)
+        
+        # Выводим найденные алиасы для отладки
+        print(f"[replace_params] Обнаружены следующие алиасы таблиц:")
+        for table, aliases in table_aliases.items():
+            if aliases:
+                print(f"  {table}: {', '.join(aliases)}")
+            else:
+                print(f"  {table}: Нет алиаса")
+                
         # 0. Спецобработка: если есть сравнение двух параметров — оба подставлять как 1
         param_cmp_pattern = r'(\{params\.[^\}]+\})\s*=\s*(\{params\.[^\}]+\})'
         for m in re.finditer(param_cmp_pattern, script_content):
@@ -145,7 +154,31 @@ class SQLParser:
         # 1. Собираем все параметры
         all_params = set(re.findall(r'\{([^\}]+)\}', script_content))
         
-        # 2. Анализируем контекст использования параметров
+        # 2. Анализируем алиасы таблиц для параметров в выражениях с таблицами
+        # Ищем параметры, используемые в сравнениях с колонками таблиц
+        # Паттерн: alias.column = {params.value} или {params.value} = alias.column
+        col_param_pattern = r'([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*=\s*\{([^\}]+)\}|\{([^\}]+)\}\s*=\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)'
+        for m in re.finditer(col_param_pattern, script_content):
+            # Определяем параметр и колонку из выражения
+            if m.group(3):  # alias.column = {params.value}
+                alias, column, param = m.group(1), m.group(2), m.group(3)
+            else:  # {params.value} = alias.column
+                param, alias, column = m.group(4), m.group(5), m.group(6)
+                
+            if param in all_params and param not in params_dict:
+                # Определяем таблицу по алиасу
+                table = self.alias_analyzer.get_table_by_alias(script_content, alias)
+                if table:
+                    print(f"[replace_params] Параметр {param} используется в сравнении с {alias}.{column} (таблица: {table})")
+                    # Подбираем значение в зависимости от имени колонки
+                    if any(id_term in column.lower() for id_term in ['id', 'ouid', 'code', 'status']):
+                        params_dict[param] = 1
+                        print(f"[replace_params] По анализу алиаса и колонки: {param} = 1 (ID-колонка)")
+                    elif any(date_term in column.lower() for date_term in ['date', 'time', 'timestamp', 'reg']):
+                        params_dict[param] = "'2023-01-01'::timestamp"
+                        print(f"[replace_params] По анализу алиаса и колонки: {param} = '2023-01-01'::timestamp (дата)")
+                
+        # 3. Анализируем контекст использования параметров
         for param in all_params:
             if param not in params_dict:
                 val = self.analyze_param_context(script_content, param)
@@ -153,7 +186,7 @@ class SQLParser:
                     params_dict[param] = val
                     print(f"[replace_params] На основе анализа контекста: {param} = {val}")
         
-        # 3. Применяем жёсткие правила по имени параметра
+        # 4. Применяем жёсткие правила по имени параметра
         for param in all_params:
             if param not in params_dict:
                 val = self.get_hardcoded_param_value(param)
@@ -161,7 +194,7 @@ class SQLParser:
                     params_dict[param] = val
                     print(f"[replace_params] По шаблону имени: {param} = {val}")
         
-        # 4. Для остальных — пробуем через БД
+        # 5. Для остальных — пробуем через БД
         missing_params = [p for p in all_params if p not in params_dict]
         if missing_params:
             db_param_types = self.guess_param_type_from_db(script_content)
@@ -170,13 +203,13 @@ class SQLParser:
                     params_dict[p] = db_param_types[p]
                     print(f"[replace_params] По БД схеме: {p} = {params_dict[p]}")
         
-        # 5. Fallback на строку
+        # 6. Fallback на строку
         for param in all_params:
             if param not in params_dict:
                 params_dict[param] = f"'default_{param}'"
                 print(f"[replace_params] Fallback на строку: {param} = {params_dict[param]}")
         
-        # 6. Подстановка
+        # 7. Подстановка
         for param in all_params:
             script_content = script_content.replace(f'{{{param}}}', str(params_dict[param]))
         
