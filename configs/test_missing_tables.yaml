@@ -1,0 +1,5 @@
+name: test_missing_tables
+input_dir: scripts/test
+output_dir: converted/test
+parallel: 1
+retry_count: 1

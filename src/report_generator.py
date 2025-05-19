@@ -21,7 +21,10 @@ class ReportGenerator:
             return None
         # Готовим DataFrame
         df = pd.DataFrame(results)
-        df['Status'] = df.apply(lambda row: 'needs_manual' if row.get('manual_processing', False) else ('success' if row['success'] else 'failed'), axis=1)
+        df['Status'] = df.apply(lambda row: 
+                            'missing_table' if row.get('missing_table', False) else 
+                            ('needs_manual' if row.get('manual_processing', False) else 
+                            ('success' if row['success'] else 'failed')), axis=1)
         df['Error'] = df['error'].fillna('')
         # Для красоты
         df['Script'] = df['script']
@@ -30,6 +33,15 @@ class ReportGenerator:
         successful_scripts = (df['Status'] == 'success').sum()
         failed_scripts = (df['Status'] == 'failed').sum()
         manual_scripts = (df['Status'] == 'needs_manual').sum()
+        missing_table_scripts = (df['Status'] == 'missing_table').sum()
+        
+        # Используем статистику из отчета, если она доступна
+        if 'success_count' in batch_report and 'manual_count' in batch_report and 'missing_table_count' in batch_report:
+            successful_scripts = batch_report['success_count']
+            manual_scripts = batch_report['manual_count']
+            missing_table_scripts = batch_report['missing_table_count']
+            failed_scripts = batch_report.get('failed_count', failed_scripts)
+        
         # HTML отчёт
         report_html = f"""
         <html>
@@ -47,6 +59,7 @@ class ReportGenerator:
                 .success {{ color: green; }}
                 .failed {{ color: red; }}
                 .needs_manual {{ color: orange; }}
+                .missing_table {{ color: blue; }}
             </style>
         </head>
         <body>
@@ -58,6 +71,7 @@ class ReportGenerator:
                 <p>Successful: <span class="success">{successful_scripts}</span></p>
                 <p>Failed: <span class="failed">{failed_scripts}</span></p>
                 <p>Needs Manual Processing: <span class="needs_manual">{manual_scripts}</span></p>
+                <p>Missing Tables: <span class="missing_table">{missing_table_scripts}</span></p>
                 <p>Success Rate: {(successful_scripts / total_scripts * 100) if total_scripts > 0 else 0:.2f}%</p>
             </div>
             <h2>Script Details</h2>
@@ -69,8 +83,17 @@ class ReportGenerator:
                 </tr>
         """
         for _, row in df.iterrows():
-            status_class = "success" if row['Status'] == 'success' else ("needs_manual" if row['Status'] == 'needs_manual' else "failed")
-            status_text = "Success" if row['Status'] == 'success' else ("Needs Manual Processing" if row['Status'] == 'needs_manual' else "Failed")
+            status_class = row['Status']  # success, needs_manual, failed, missing_table
+            
+            if status_class == 'success':
+                status_text = "Success"
+            elif status_class == 'needs_manual':
+                status_text = "Needs Manual Processing"
+            elif status_class == 'missing_table':
+                status_text = "Missing Table"
+            else:
+                status_text = "Failed"
+                
             report_html += f"""
                 <tr>
                     <td>{row['Script']}</td>

@@ -929,4 +929,53 @@ class AIConverter:
         # TO_TIMESTAMP(X::text, 'YYYY-MM-DD') -> DATE_TRUNC('day', X)
         sql_code = re.sub(r"TO_TIMESTAMP\(([^)]+?)::text,\s*'YYYY-MM-DD'\)", r"DATE_TRUNC('day', \1)", sql_code)
         
+        # --- Новый блок: исправляем сравнения числовых полей с пустой строкой ---
+        from src.parser import SQLParser
+        parser = SQLParser(self.config)
+        alias_analyzer = self.alias_analyzer
+        import psycopg2
+        pg = self.config.PG_CONFIG
+        def get_column_type(table, column):
+            try:
+                with psycopg2.connect(
+                    host=pg['host'], port=pg['port'], database=pg['database'], user=pg['user'], password=pg['password']
+                ) as conn, conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT data_type
+                        FROM information_schema.columns
+                        WHERE table_name = %s AND column_name = %s
+                        LIMIT 1
+                    """, (table.lower(), column.lower()))
+                    row = cur.fetchone()
+                    if row:
+                        return row[0]
+            except Exception as e:
+                print(f"[post_process_sql] Ошибка при получении типа для {table}.{column}: {e}")
+            return None
+
+        def fix_empty_string_comparison(match):
+            field = match.group(1)
+            # Попробуем вытащить alias и column
+            if '.' in field:
+                alias, column = field.split('.', 1)
+                table = alias_analyzer.get_table_by_alias(sql_code, alias)
+            else:
+                table, column = None, field
+            col_type = None
+            if table:
+                col_type = get_column_type(table, column)
+            # Если числовой тип — исправляем
+            if col_type and col_type.lower() in [
+                'double precision', 'numeric', 'integer', 'float', 'real', 'bigint', 'smallint', 'decimal']:
+                return f"{field} IS NULL"
+            else:
+                return match.group(0)
+
+        sql_code = re.sub(
+            r"([\w\.]+)\s*=\s*''(::text)?",
+            fix_empty_string_comparison,
+            sql_code
+        )
+        # --- конец нового блока ---
+
         return sql_code

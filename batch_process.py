@@ -85,6 +85,7 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
         retries = 0
         last_error = None
         test_success = False
+        missing_table = False
         
         while retries < retry_count and not test_success:
             try:
@@ -97,18 +98,34 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
                     # })
                 else:
                     last_error = test_result['error']
+                    # Проверяем, содержит ли ошибка сообщение о несуществующей таблице
+                    if 'relation' in last_error and 'does not exist' in last_error:
+                        missing_table = True
+                        # Прекращаем повторные попытки, так как таблицы всё равно нет
+                        break
+                    
                     if verbose:
                         print(f"Попытка {retries+1}: Ошибка выполнения {script_name}: {last_error}")
                     # Не вызываем fix_script, AI уже делал исправления
                     retries += 1
             except Exception as e:
                 last_error = str(e)
+                # Проверяем, содержит ли исключение сообщение о несуществующей таблице
+                if 'relation' in str(e) and 'does not exist' in str(e):
+                    missing_table = True
+                    # Прекращаем повторные попытки, так как таблицы всё равно нет
+                    break
+                
                 if verbose:
                     print(f"Попытка {retries+1}: Исключение при выполнении {script_name}: {last_error}")
                 retries += 1
         
         # Лог только если ошибка
-        if not test_success or not success:
+        if missing_table:
+            logger.log_script_processing(script_name, 'error', 'missing_table', last_error)
+            if verbose:
+                print(f"📋 {script_name}: Пропущен из-за отсутствия таблицы: {last_error}")
+        elif not test_success or not success:
             logger.log_script_processing(script_name, 'error', 'failed', last_error or message)
             if verbose:
                 print(f"❌ {script_name}: Не удалось выполнить после {retry_count} попыток")
@@ -126,6 +143,7 @@ def process_script(script_path, output_dir, params=None, retry_count=3, verbose=
             'success': test_success and success,
             'error': last_error or message if not test_success or not success else None,
             'manual_processing': requires_manual,
+            'missing_table': missing_table,
             'retries': retries,
             'original_size': len(script_content),
             'converted_size': len(converted_script)
@@ -252,9 +270,16 @@ def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_dock
     # Выводим итоги
     elapsed_time = time.time() - start_time
     success_count = sum(1 for r in results if r['success'])
+    manual_count = sum(1 for r in results if r.get('manual_processing', False))
+    missing_table_count = sum(1 for r in results if r.get('missing_table', False))
+    failed_count = len(results) - success_count - manual_count - missing_table_count
     
     print(f"\nОбработка завершена за {elapsed_time:.2f} секунд")
-    print(f"Успешно обработано: {success_count} из {len(results)} скриптов")
+    print(f"Всего обработано: {len(results)} скриптов")
+    print(f"  - Успешно: {success_count}")
+    print(f"  - Требуют ручной обработки: {manual_count}")
+    print(f"  - Отсутствующие таблицы: {missing_table_count}")
+    print(f"  - Ошибки: {failed_count}")
     
     # Сохраняем отчет
     report_path = output_dir / f"{batch_name}_report.json"
@@ -264,6 +289,9 @@ def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_dock
         'input_dir': str(input_dir),
         'output_dir': str(output_dir),
         'success_count': success_count,
+        'manual_count': manual_count,
+        'missing_table_count': missing_table_count, 
+        'failed_count': failed_count,
         'total_count': len(results),
         'elapsed_time': elapsed_time,
         'results': results
@@ -285,7 +313,9 @@ def process_batch(config_file, verbose=False, ai_provider='anthropic', skip_dock
         else:
             print("Нет данных для итогового отчёта.")
     
-    return success_count == len(results)
+    # Считаем процесс успешным, если все скрипты обработаны (даже если требуют ручной обработки или отсутствуют таблицы)
+    # Только ошибки считаем неуспехом
+    return failed_count == 0
 
 def main():
     """
