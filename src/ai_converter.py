@@ -749,6 +749,11 @@ class AIConverter:
         Returns:
             str: Извлеченный SQL-код
         """
+        # Удалим все маркеры обратных кавычек, если они находятся в начале или конце строки
+        response = re.sub(r'^```sql\s*\n', '', response, flags=re.MULTILINE)
+        response = re.sub(r'^```\s*\n', '', response, flags=re.MULTILINE)
+        response = re.sub(r'\n```\s*$', '', response, flags=re.MULTILINE)
+
         # Пытаемся найти SQL между тройными обратными кавычками
         sql_pattern = r"```sql\s*([\s\S]*?)\s*```"
         sql_match = re.search(sql_pattern, response)
@@ -766,6 +771,9 @@ class AIConverter:
                 # Если и так не нашли, возвращаем весь ответ, предполагая, что это чистый SQL
                 sql_code = response.strip()
         
+        # Финальная проверка, чтобы убедиться, что в тексте не остались маркеры ```
+        sql_code = re.sub(r'```sql|```', '', sql_code)
+
         return sql_code
     
     def _post_process_sql(self, sql_code: str) -> str:
