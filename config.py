@@ -138,9 +138,11 @@ ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-3-sonnet-20240229')
 # Низкая температура для более предсказуемых результатов
 AI_TEMPERATURE = float(os.getenv('AI_TEMPERATURE', 1))
 # Максимальная длина ответа 
-AI_MAX_TOKENS = int(os.getenv('AI_MAX_TOKENS', 32000))
+AI_MAX_TOKENS = int(os.getenv('AI_MAX_TOKENS', 200000))
 # Количество попыток использования нейросети при ошибках
 AI_RETRY_COUNT = int(os.getenv('AI_RETRY_COUNT', 2))
+# Таймаут для API запросов в секундах
+API_TIMEOUT = int(os.getenv('API_TIMEOUT', 60))
 
 # Порог использования нейросети
 # Если стандартные методы не справляются после этого количества попыток, 

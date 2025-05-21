@@ -163,6 +163,8 @@ def main():
                       help='Не использовать реальную БД для тестирования (только синтаксическая проверка)')
     parser.add_argument('--max-iterations', type=int, default=3,
                       help='Максимальное количество итераций для улучшения скрипта (по умолчанию 3)')
+    parser.add_argument('--timeout', type=int, default=60,
+                      help='Таймаут API запросов в секундах (по умолчанию 60)')
     
     args = parser.parse_args()
     
@@ -193,6 +195,11 @@ def main():
     else:
         print(f"Режим тестирования: с использованием реальной БД ({config.PG_CONNECTION_STRING.replace(config.PG_CONFIG['password'], '****')})")
     
+    # Устанавливаем таймаут для API запросов, если указан
+    if args.timeout:
+        config.API_TIMEOUT = args.timeout
+        print(f"Установлен таймаут API запросов: {args.timeout} секунд")
+    
     # Проверяем Docker только если не указан флаг --skip-docker-check
     if not args.skip_docker_check:
         tester = PostgresTester(config)
@@ -209,6 +216,7 @@ def main():
     # Выводим информацию о настройках
     print(f"Используется нейросеть: {config.AI_PROVIDER}")
     print(f"Модель: {getattr(config, f'{config.AI_PROVIDER.upper()}_MODEL', 'не указана')}")
+    print(f"Таймаут API запросов: {config.API_TIMEOUT} секунд")
     
     # Запускаем тестирование
     test_ai_conversion(args.script, args.save, args.api_key, args.max_iterations)

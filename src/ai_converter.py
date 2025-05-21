@@ -43,6 +43,9 @@ class AIConverter:
             'PG_CONNECTION_STRING', 
             'postgresql://username:password@localhost:5432/test_db'
         )
+        # Значение таймаута для запросов API (по умолчанию 60 секунд)
+        self.api_timeout = getattr(self.config, 'API_TIMEOUT', 60)
+        print(f"Установлен таймаут API запросов: {self.api_timeout} секунд")
         # Инициализируем анализатор алиасов SQL
         self.alias_analyzer = SQLAliasAnalyzer()
         
@@ -142,6 +145,11 @@ class AIConverter:
             original_script: Исходный MS SQL скрипт (может быть строкой или словарем)
             error_message: Сообщение об ошибке из PostgreSQL, если есть
             max_iterations: Максимальное количество итераций для проверки и исправления
+            
+        Примечание:
+            Таймаут запросов к API может быть настроен через конфигурацию (API_TIMEOUT)
+            или через параметр командной строки --timeout.
+            Для больших скриптов (>4000 строк) рекомендуется увеличить таймаут до 180-300 секунд.
             
         Returns:
             Tuple[bool, str, str]: (успех, сконвертированный скрипт, сообщение)
@@ -508,7 +516,7 @@ class AIConverter:
                 "https://api.openai.com/v1/chat/completions",
                 headers=headers,
                 json=data,
-                timeout=60
+                timeout=self.api_timeout  # Используем настраиваемый таймаут
             )
             
             if response.status_code != 200:
@@ -525,6 +533,8 @@ class AIConverter:
             
             return True, converted_script, "Успешно сконвертировано с помощью OpenAI"
             
+        except requests.exceptions.Timeout:
+            return False, original_script, f"Превышен таймаут запроса к OpenAI API ({self.api_timeout} секунд). Попробуйте увеличить таймаут с помощью параметра --timeout."
         except Exception as e:
             return False, original_script, f"Ошибка при запросе к OpenAI: {str(e)}"
     
@@ -576,7 +586,7 @@ class AIConverter:
                 "https://api.anthropic.com/v1/messages",
                 headers=headers,
                 json=data,
-                timeout=60
+                timeout=self.api_timeout  # Используем настраиваемый таймаут
             )
             
             print(f"Код ответа от Anthropic API: {response.status_code}")
@@ -595,6 +605,8 @@ class AIConverter:
             
             return True, converted_script, "Успешно сконвертировано с помощью Anthropic Claude"
             
+        except requests.exceptions.Timeout:
+            return False, original_script, f"Превышен таймаут запроса к Anthropic API ({self.api_timeout} секунд). Попробуйте увеличить таймаут с помощью параметра --timeout."
         except Exception as e:
             return False, original_script, f"Ошибка при запросе к Anthropic: {str(e)}"
     
