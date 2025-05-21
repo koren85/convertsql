@@ -491,7 +491,9 @@ class AIConverter:
         
         model = getattr(self.config, 'OPENAI_MODEL', 'gpt-4') 
         temperature = getattr(self.config, 'AI_TEMPERATURE', 0.1)
-        max_tokens = getattr(self.config, 'AI_MAX_TOKENS', 4000)
+        max_tokens = getattr(self.config, 'AI_MAX_TOKENS', 64000)
+        
+        print(f"Максимальное количество токенов для ответа: {max_tokens}")
         
         # Формируем промпт для модели с улучшенным описанием для типов данных
         prompt = self._create_improved_prompt(original_script, error_message)
@@ -555,7 +557,9 @@ class AIConverter:
         
         model = getattr(self.config, 'ANTHROPIC_MODEL', 'claude-3-sonnet-20240229')
         temperature = getattr(self.config, 'AI_TEMPERATURE', 0.1)
-        max_tokens = getattr(self.config, 'AI_MAX_TOKENS', 4000)
+        max_tokens = getattr(self.config, 'AI_MAX_TOKENS', 64000)
+        
+        print(f"Максимальное количество токенов для ответа: {max_tokens}")
         
         # Формируем промпт для модели с улучшенным описанием для типов данных
         prompt = self._create_improved_prompt(original_script, error_message)

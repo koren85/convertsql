@@ -165,6 +165,8 @@ def main():
                       help='Максимальное количество итераций для улучшения скрипта (по умолчанию 3)')
     parser.add_argument('--timeout', type=int, default=60,
                       help='Таймаут API запросов в секундах (по умолчанию 60)')
+    parser.add_argument('--max-tokens', type=int, default=200000,
+                      help='Максимальное количество токенов в ответе нейросети (по умолчанию 200000)')
     
     args = parser.parse_args()
     
@@ -200,6 +202,11 @@ def main():
         config.API_TIMEOUT = args.timeout
         print(f"Установлен таймаут API запросов: {args.timeout} секунд")
     
+    # Устанавливаем максимальное количество токенов, если указано
+    if args.max_tokens:
+        config.AI_MAX_TOKENS = args.max_tokens
+        print(f"Установлено максимальное количество токенов: {args.max_tokens}")
+    
     # Проверяем Docker только если не указан флаг --skip-docker-check
     if not args.skip_docker_check:
         tester = PostgresTester(config)
@@ -217,6 +224,7 @@ def main():
     print(f"Используется нейросеть: {config.AI_PROVIDER}")
     print(f"Модель: {getattr(config, f'{config.AI_PROVIDER.upper()}_MODEL', 'не указана')}")
     print(f"Таймаут API запросов: {config.API_TIMEOUT} секунд")
+    print(f"Максимальное количество токенов: {config.AI_MAX_TOKENS}")
     
     # Запускаем тестирование
     test_ai_conversion(args.script, args.save, args.api_key, args.max_iterations)
