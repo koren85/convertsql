@@ -163,6 +163,11 @@ class AIConverter:
                 script_text = self.extract_sql_text(original_script)
                 return False, script_text, f"Скрипт требует ручной обработки: {skip_reason}"
             
+            # Проверяем, является ли скрипт большим и требует разделения на части
+            if self.is_large_script(original_script):
+                print(f"\n⚠️ Обнаружен большой скрипт, применяем обработку по частям")
+                return self.convert_large_script(original_script, error_message, max_iterations)
+            
             # Извлекаем текст скрипта
             script_text = self.extract_sql_text(original_script)
             
@@ -610,7 +615,7 @@ class AIConverter:
             return True, converted_script, "Успешно сконвертировано с помощью Anthropic Claude"
             
         except requests.exceptions.Timeout:
-            return False, original_script, f"Превышен таймаут запроса к Anthropic API ({self.api_timeout} секунд). Попробуйте увеличить таймаут с помощью параметра --timeout."
+            return False, original_script, f"Превышен таймаут запроса к Anthropic API ({self.api_timeout} секунд)"
         except Exception as e:
             return False, original_script, f"Ошибка при запросе к Anthropic: {str(e)}"
     
@@ -1009,3 +1014,658 @@ class AIConverter:
         # --- конец нового блока ---
 
         return sql_code
+        
+    def is_large_script(self, script: str) -> bool:
+        """
+        Определяет, является ли скрипт "большим" и требующим разделения на части
+        
+        Args:
+            script: SQL скрипт для проверки
+            
+        Returns:
+            bool: True, если скрипт считается большим
+        """
+        # Извлекаем текст из скрипта, если это словарь
+        script_text = self.extract_sql_text(script)
+        
+        # Подсчитываем количество строк
+        lines = script_text.splitlines()
+        line_count = len(lines)
+        
+        # Устанавливаем порог для больших скриптов (можно настроить через конфигурацию)
+        large_script_threshold = getattr(self.config, 'LARGE_SCRIPT_THRESHOLD', 1000)
+        
+        print(f"Количество строк в скрипте: {line_count}, порог для больших скриптов: {large_script_threshold}")
+        
+        return line_count > large_script_threshold
+    
+    def convert_large_script(self, original_script: str, error_message: str = None, 
+                            max_iterations: int = 3) -> Tuple[bool, str, str]:
+        """
+        Обрабатывает большой скрипт, разделяя его на логические части с учетом SQL-конструкций
+        
+        Args:
+            original_script: Исходный MS SQL скрипт (может быть строкой или словарем)
+            error_message: Сообщение об ошибке из PostgreSQL, если есть
+            max_iterations: Максимальное количество итераций для проверки и исправления
+            
+        Returns:
+            Tuple[bool, str, str]: (успех, сконвертированный скрипт, сообщение)
+        """
+        try:
+            # Извлекаем текст скрипта
+            script_text = self.extract_sql_text(original_script)
+            
+            # Разделяем скрипт на логические блоки
+            logical_blocks = self._split_to_logical_blocks(script_text)
+            
+            # Группируем логические блоки в чанки подходящего размера
+            chunk_size = getattr(self.config, 'LARGE_SCRIPT_CHUNK_SIZE', 200)
+            chunks = self._group_blocks_into_chunks(logical_blocks, chunk_size)
+            
+            print(f"Скрипт разделен на {len(chunks)} логических частей")
+            
+            # Создаем директорию для сохранения промежуточных результатов
+            chunks_dir = Path("chunks")
+            chunks_dir.mkdir(exist_ok=True)
+            
+            # Создаем подпапки для исходных и конвертированных частей
+            original_chunks_dir = chunks_dir / "original"
+            converted_chunks_dir = chunks_dir / "converted"
+            original_chunks_dir.mkdir(exist_ok=True)
+            converted_chunks_dir.mkdir(exist_ok=True)
+            
+            # Очищаем папки от предыдущих результатов
+            for file in original_chunks_dir.glob("*.sql"):
+                file.unlink()
+            for file in converted_chunks_dir.glob("*.sql"):
+                file.unlink()
+                
+            print(f"Промежуточные результаты будут сохранены в папке {chunks_dir.absolute()}")
+            
+            converted_chunks = []
+            failed_chunks = []
+            
+            # Обрабатываем каждый чанк отдельно
+            for i, chunk in enumerate(chunks):
+                print(f"\n--- Обработка части {i+1}/{len(chunks)} ---")
+                
+                # Сохраняем оригинальный чанк
+                chunk_filename = f"part_{i+1:03d}.sql"
+                with open(original_chunks_dir / chunk_filename, "w", encoding="utf-8") as f:
+                    f.write(chunk)
+                
+                # Определяем какой API использовать из конфигурации
+                ai_provider = getattr(self.config, 'AI_PROVIDER', 'openai').lower()
+                
+                # Создаем специальный промт для части большого скрипта
+                part_prompt = self._create_part_prompt(chunk, i+1, len(chunks), error_message)
+                
+                # Конвертируем чанк с модифицированным промтом
+                if ai_provider == 'openai':
+                    success, converted_chunk, message = self._convert_chunk_with_openai(chunk, part_prompt)
+                elif ai_provider == 'anthropic':
+                    success, converted_chunk, message = self._convert_chunk_with_anthropic(chunk, part_prompt)
+                else:
+                    return False, script_text, f"Неизвестный провайдер AI: {ai_provider}"
+                
+                # Сохраняем результат конвертации чанка
+                with open(converted_chunks_dir / chunk_filename, "w", encoding="utf-8") as f:
+                    f.write(converted_chunk)
+                
+                if success:
+                    converted_chunks.append(converted_chunk)
+                    print(f"✅ Часть {i+1}/{len(chunks)} успешно сконвертирована и сохранена в {converted_chunks_dir / chunk_filename}")
+                else:
+                    # Если не удалось сконвертировать, сохраняем оригинальный чанк
+                    converted_chunks.append(chunk)
+                    failed_chunks.append(i)
+                    print(f"❌ Ошибка при конвертации части {i+1}/{len(chunks)}: {message}")
+            
+            # Объединяем все сконвертированные чанки
+            converted_script = "\n".join(converted_chunks)
+            
+            # Постобработка объединенного скрипта для исправления возможных проблем
+            try:
+                converted_script = self._post_process_large_script(converted_script)
+                
+                # Сохраняем итоговый объединенный результат
+                with open(chunks_dir / "combined_result.sql", "w", encoding="utf-8") as f:
+                    f.write(converted_script)
+                print(f"Итоговый объединенный скрипт сохранен в {chunks_dir / 'combined_result.sql'}")
+                
+            except Exception as e:
+                print(f"⚠️ Ошибка при постобработке объединенного скрипта: {str(e)}")
+                print("Возвращаем необработанный объединенный результат")
+                # Сохраняем необработанную версию
+                with open(chunks_dir / "combined_raw.sql", "w", encoding="utf-8") as f:
+                    f.write(converted_script)
+                print(f"Необработанный объединенный скрипт сохранен в {chunks_dir / 'combined_raw.sql'}")
+            
+            if failed_chunks:
+                message = f"Сконвертировано с ошибками в частях: {', '.join(map(str, [i+1 for i in failed_chunks]))}"
+                return False, converted_script, message
+            else:
+                message = "Большой скрипт успешно сконвертирован по логическим частям"
+                return True, converted_script, message
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            # Извлекаем текст скрипта
+            script_text = self.extract_sql_text(original_script)
+            return False, script_text, f"Ошибка при конвертации большого скрипта: {str(e)}"
+    
+    def _split_to_logical_blocks(self, script: str) -> List[str]:
+        """
+        Разделяет SQL-скрипт на логические блоки по границам SQL-конструкций
+        
+        Args:
+            script: SQL-скрипт для разделения
+            
+        Returns:
+            List[str]: Список логических блоков SQL
+        """
+        # Паттерны для определения начала новых SQL-конструкций
+        start_patterns = [
+            r"^\s*CREATE\s+", 
+            r"^\s*ALTER\s+", 
+            r"^\s*DROP\s+", 
+            r"^\s*INSERT\s+", 
+            r"^\s*UPDATE\s+", 
+            r"^\s*DELETE\s+", 
+            r"^\s*SELECT\s+",
+            r"^\s*DECLARE\s+",
+            r"^\s*SET\s+",
+            r"^\s*IF\s+",
+            r"^\s*BEGIN\s+",
+            r"^\s*END\s*$",
+            r"^\s*EXEC\s+",
+            r"^\s*USE\s+",
+            r"^\s*PRINT\s+"
+        ]
+        
+        # Разбиваем скрипт на строки
+        lines = script.splitlines()
+        
+        # Инициализируем переменные
+        blocks = []
+        current_block = []
+        in_comment_block = False
+        
+        for line in lines:
+            line_stripped = line.strip()
+            
+            # Обработка комментариев
+            if line_stripped.startswith("/*"):
+                in_comment_block = True
+            
+            if in_comment_block and "*/" in line_stripped:
+                in_comment_block = False
+            
+            # Пропускаем пустые строки и комментарии при определении начала блока
+            if (not line_stripped or line_stripped.startswith("--") or in_comment_block) and not current_block:
+                current_block.append(line)
+                continue
+            
+            # Если найдено начало новой SQL-конструкции и текущий блок не пуст,
+            # завершаем текущий блок и начинаем новый
+            if current_block and not in_comment_block:
+                for pattern in start_patterns:
+                    if re.match(pattern, line_stripped, re.IGNORECASE):
+                        blocks.append("\n".join(current_block))
+                        current_block = [line]
+                        break
+                else:
+                    # Если это не начало новой конструкции, добавляем строку к текущему блоку
+                    current_block.append(line)
+            else:
+                # Добавляем строку к текущему блоку
+                current_block.append(line)
+        
+        # Добавляем последний блок, если он не пуст
+        if current_block:
+            blocks.append("\n".join(current_block))
+        
+        return blocks
+    
+    def _group_blocks_into_chunks(self, blocks: List[str], chunk_size: int) -> List[str]:
+        """
+        Группирует логические блоки в чанки подходящего размера
+        
+        Args:
+            blocks: Список логических блоков SQL
+            chunk_size: Приблизительный размер чанка в строках
+            
+        Returns:
+            List[str]: Список чанков для обработки
+        """
+        chunks = []
+        current_chunk = []
+        current_lines_count = 0
+        
+        for block in blocks:
+            block_lines_count = len(block.splitlines())
+            
+            # Если блок слишком большой, разбиваем его на более мелкие части
+            if block_lines_count > chunk_size * 2:
+                print(f"⚠️ Обнаружен очень большой логический блок ({block_lines_count} строк), разбиваем его")
+                sub_blocks = self._split_large_block(block, chunk_size)
+                for sub_block in sub_blocks:
+                    sub_block_lines = len(sub_block.splitlines())
+                    chunks.append(sub_block)
+                continue
+            
+            # Если добавление блока превысит размер чанка, начинаем новый чанк
+            if current_lines_count + block_lines_count > chunk_size and current_chunk:
+                chunks.append("\n".join(current_chunk))
+                current_chunk = [block]
+                current_lines_count = block_lines_count
+            else:
+                # Иначе добавляем блок к текущему чанку
+                current_chunk.append(block)
+                current_lines_count += block_lines_count
+        
+        # Добавляем последний чанк, если он не пуст
+        if current_chunk:
+            chunks.append("\n".join(current_chunk))
+        
+        return chunks
+    
+    def _split_large_block(self, block: str, chunk_size: int) -> List[str]:
+        """
+        Разбивает очень большой логический блок на более мелкие части
+        с попыткой сохранить целостность SQL-конструкций
+        
+        Args:
+            block: Большой блок SQL
+            chunk_size: Приблизительный размер чанка в строках
+            
+        Returns:
+            List[str]: Список разделенных частей блока
+        """
+        lines = block.splitlines()
+        
+        # Если блок - CREATE TABLE, ищем логические разделы внутри него
+        if re.match(r"^\s*CREATE\s+TABLE", lines[0], re.IGNORECASE):
+            return self._split_create_table(block, chunk_size)
+        
+        # Если блок - INSERT, ищем логические разделы VALUES
+        if re.match(r"^\s*INSERT\s+INTO", lines[0], re.IGNORECASE):
+            return self._split_insert_values(block, chunk_size)
+        
+        # Для других типов блоков, просто разбиваем по размеру с учетом скобок и точек с запятой
+        sub_blocks = []
+        current_sub_block = []
+        current_lines_count = 0
+        bracket_count = 0
+        
+        for line in lines:
+            # Подсчитываем скобки для отслеживания вложенных конструкций
+            bracket_count += line.count('(') - line.count(')')
+            
+            current_sub_block.append(line)
+            current_lines_count += 1
+            
+            # Если достигли приблизительного размера чанка и находимся на логической границе,
+            # начинаем новый подблок
+            if (current_lines_count >= chunk_size and bracket_count == 0 and
+                (';' in line or line.strip() == '')):
+                sub_blocks.append("\n".join(current_sub_block))
+                current_sub_block = []
+                current_lines_count = 0
+        
+        # Добавляем последний подблок
+        if current_sub_block:
+            sub_blocks.append("\n".join(current_sub_block))
+        
+        # Если не удалось разделить блок, просто разбиваем по приблизительному размеру
+        if not sub_blocks or len(sub_blocks) == 1 and len(lines) > chunk_size:
+            sub_blocks = ["\n".join(lines[i:i+chunk_size]) for i in range(0, len(lines), chunk_size)]
+        
+        return sub_blocks
+    
+    def _split_create_table(self, block: str, chunk_size: int) -> List[str]:
+        """
+        Специализированная функция разделения CREATE TABLE на логические части
+        
+        Args:
+            block: CREATE TABLE блок
+            chunk_size: Приблизительный размер чанка
+            
+        Returns:
+            List[str]: Список разделенных частей CREATE TABLE
+        """
+        lines = block.splitlines()
+        
+        # Находим заголовок CREATE TABLE (до первой скобки)
+        header_end = 0
+        for i, line in enumerate(lines):
+            if '(' in line:
+                header_end = i
+                break
+        
+        header = lines[:header_end+1]
+        
+        # Находим все определения столбцов и ограничений
+        body_lines = lines[header_end+1:]
+        column_defs = []
+        current_def = []
+        bracket_count = 1  # Уже открыта одна скобка в заголовке
+        
+        for line in body_lines:
+            bracket_count += line.count('(') - line.count(')')
+            
+            # Если строка содержит запятую и баланс скобок в порядке, это конец определения
+            if ',' in line and bracket_count == 1 and not current_def:
+                column_defs.append(line)
+            elif ',' in line and bracket_count == 1:
+                current_def.append(line)
+                column_defs.append("\n".join(current_def))
+                current_def = []
+            else:
+                current_def.append(line)
+        
+        # Добавляем последнее определение
+        if current_def:
+            column_defs.append("\n".join(current_def))
+        
+        # Группируем определения в чанки
+        sub_blocks = []
+        current_lines_count = len(header)
+        current_defs = list(header)
+        
+        for col_def in column_defs:
+            col_lines_count = len(col_def.splitlines())
+            
+            if current_lines_count + col_lines_count > chunk_size:
+                # Заканчиваем текущую часть CREATE TABLE
+                current_defs.append("  -- Часть таблицы, продолжение в следующем блоке")
+                current_defs.append(")")
+                sub_blocks.append("\n".join(current_defs))
+                
+                # Начинаем новую часть CREATE TABLE
+                current_defs = list(header)
+                current_defs.append("  -- Продолжение таблицы")
+                current_defs.append(col_def)
+                current_lines_count = len(header) + col_lines_count
+            else:
+                current_defs.append(col_def)
+                current_lines_count += col_lines_count
+        
+        # Добавляем последнюю часть
+        if current_defs:
+            if current_defs[-1] != ")":
+                current_defs.append(")")
+            sub_blocks.append("\n".join(current_defs))
+        
+        return sub_blocks
+    
+    def _split_insert_values(self, block: str, chunk_size: int) -> List[str]:
+        """
+        Специализированная функция разделения INSERT INTO на логические части
+        
+        Args:
+            block: INSERT INTO блок
+            chunk_size: Приблизительный размер чанка
+            
+        Returns:
+            List[str]: Список разделенных частей INSERT
+        """
+        lines = block.splitlines()
+        
+        # Находим заголовок INSERT (до VALUES или SELECT)
+        header_end = 0
+        for i, line in enumerate(lines):
+            if re.search(r'\bVALUES\b|\bSELECT\b', line, re.IGNORECASE):
+                header_end = i
+                break
+        
+        header = lines[:header_end+1]
+        body_lines = lines[header_end+1:]
+        
+        # Если INSERT содержит SELECT, обрабатываем как один блок
+        if any(re.search(r'\bSELECT\b', line, re.IGNORECASE) for line in header):
+            return [block]
+        
+        # Разделяем VALUES на отдельные наборы
+        value_sets = []
+        current_set = []
+        bracket_count = 0
+        
+        for line in body_lines:
+            bracket_count += line.count('(') - line.count(')')
+            
+            current_set.append(line)
+            
+            # Если строка содержит закрывающую скобку и запятую, и баланс скобок в порядке,
+            # это конец набора значений
+            if bracket_count == 0 and (',' in line or ';' in line):
+                value_sets.append("\n".join(current_set))
+                current_set = []
+        
+        # Добавляем последний набор
+        if current_set:
+            value_sets.append("\n".join(current_set))
+        
+        # Группируем наборы в чанки
+        sub_blocks = []
+        current_lines_count = len(header)
+        current_values = list(header)
+        
+        for value_set in value_sets:
+            value_lines_count = len(value_set.splitlines())
+            
+            if current_lines_count + value_lines_count > chunk_size and current_values != header:
+                # Заканчиваем текущий INSERT
+                sub_blocks.append("\n".join(current_values))
+                
+                # Начинаем новый INSERT
+                current_values = list(header)
+                current_values.append(value_set)
+                current_lines_count = len(header) + value_lines_count
+            else:
+                current_values.append(value_set)
+                current_lines_count += value_lines_count
+        
+        # Добавляем последний INSERT
+        if current_values:
+            sub_blocks.append("\n".join(current_values))
+        
+        return sub_blocks
+    
+    def _create_part_prompt(self, chunk: str, part_index: int, total_parts: int, error_message: str = None) -> str:
+        """
+        Создает специальный промт для части большого скрипта
+        
+        Args:
+            chunk: Часть скрипта для конвертации
+            part_index: Номер текущей части
+            total_parts: Общее количество частей
+            error_message: Сообщение об ошибке, если есть
+            
+        Returns:
+            str: Промт для нейросети
+        """
+        # Базовый промт для конвертации
+        base_prompt = self._create_improved_prompt(chunk, error_message)
+        
+        # Добавляем информацию о том, что это часть большого скрипта
+        part_info = f"""
+ВАЖНО: Эта часть является частью {part_index} из {total_parts} большого SQL-скрипта.
+
+Обратите внимание на следующие моменты при конвертации:
+1. Конвертируйте только предоставленную часть, не пытайтесь "угадать" остальное содержимое
+2. Если видны незавершенные SQL-конструкции (например, незакрытые скобки) - конвертируйте то, что видите
+3. Сохраняйте комментарии, особенно те, которые могут указывать на связь с другими частями скрипта
+4. В логических конструкциях (IF, CASE, BEGIN/END) убедитесь, что сохраняется структура
+5. Обрабатывайте каждую законченную SQL-конструкцию как отдельную единицу
+
+Ниже приведена часть {part_index} из {total_parts} для конвертации:
+"""
+        
+        # Вставляем информацию о части скрипта после первого абзаца базового промта
+        lines = base_prompt.splitlines()
+        insert_index = 4  # Примерно после первого абзаца
+        
+        modified_prompt = "\n".join(lines[:insert_index]) + part_info + "\n".join(lines[insert_index:])
+        
+        return modified_prompt
+    
+    def _convert_chunk_with_openai(self, chunk: str, prompt: str) -> Tuple[bool, str, str]:
+        """
+        Конвертирует часть скрипта с помощью OpenAI API, используя специальный промт
+        
+        Args:
+            chunk: Часть скрипта для конвертации
+            prompt: Специальный промт для этой части
+            
+        Returns:
+            Tuple[bool, str, str]: (успех, сконвертированная часть, сообщение)
+        """
+        api_key = self.api_keys.get('openai')
+        if not api_key:
+            return False, chunk, "API ключ OpenAI не найден. Проверьте файл .env или переменную окружения OPENAI_API_KEY."
+        
+        model = getattr(self.config, 'OPENAI_MODEL', 'gpt-4') 
+        temperature = getattr(self.config, 'AI_TEMPERATURE', 0.1)
+        max_tokens = getattr(self.config, 'AI_MAX_TOKENS', 64000)
+        
+        print(f"Максимальное количество токенов для ответа: {max_tokens}")
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        
+        data = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": self._get_system_prompt()},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=self.api_timeout
+            )
+            
+            if response.status_code != 200:
+                return False, chunk, f"Ошибка API OpenAI: {response.status_code} - {response.text}"
+            
+            response_data = response.json()
+            converted_chunk = response_data['choices'][0]['message']['content']
+            
+            # Извлекаем SQL из ответа
+            converted_chunk = self._extract_sql_from_response(converted_chunk)
+            
+            # Постобработка результата
+            converted_chunk = self._post_process_sql(converted_chunk)
+            
+            return True, converted_chunk, "Успешно сконвертировано с помощью OpenAI"
+            
+        except requests.exceptions.Timeout:
+            return False, chunk, f"Превышен таймаут запроса к OpenAI API ({self.api_timeout} секунд)"
+        except Exception as e:
+            return False, chunk, f"Ошибка при запросе к OpenAI: {str(e)}"
+    
+    def _convert_chunk_with_anthropic(self, chunk: str, prompt: str) -> Tuple[bool, str, str]:
+        """
+        Конвертирует часть скрипта с помощью Anthropic API, используя специальный промт
+        
+        Args:
+            chunk: Часть скрипта для конвертации
+            prompt: Специальный промт для этой части
+            
+        Returns:
+            Tuple[bool, str, str]: (успех, сконвертированная часть, сообщение)
+        """
+        api_key = self.api_keys.get('anthropic')
+        if not api_key:
+            return False, chunk, "API ключ Anthropic не найден. Проверьте файл .env или переменную окружения ANTHROPIC_API_KEY."
+        
+        model = getattr(self.config, 'ANTHROPIC_MODEL', 'claude-3-sonnet-20240229')
+        temperature = getattr(self.config, 'AI_TEMPERATURE', 0.1)
+        max_tokens = getattr(self.config, 'AI_MAX_TOKENS', 64000)
+        
+        print(f"Максимальное количество токенов для ответа: {max_tokens}")
+        
+        # Заголовки для Anthropic API
+        headers = {
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01",
+            "x-api-key": api_key
+        }
+        
+        # Печатаем первые 10 символов ключа для отладки
+        key_preview = api_key[:10] + "..." if len(api_key) > 10 else api_key
+        print(f"Используем ключ API Anthropic (первые символы): {key_preview}")
+        
+        data = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "system": self._get_system_prompt(),
+            "messages": [
+                {"role": "user", "content": prompt}
+            ]
+        }
+        
+        try:
+            response = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=data,
+                timeout=self.api_timeout  # Используем настраиваемый таймаут
+            )
+            
+            print(f"Код ответа от Anthropic API: {response.status_code}")
+            
+            if response.status_code != 200:
+                return False, chunk, f"Ошибка API Anthropic: {response.status_code} - {response.text}"
+            
+            response_data = response.json()
+            converted_chunk = response_data['content'][0]['text']
+            
+            # Извлекаем SQL из ответа
+            converted_chunk = self._extract_sql_from_response(converted_chunk)
+            
+            # Постобработка результата
+            converted_chunk = self._post_process_sql(converted_chunk)
+            
+            return True, converted_chunk, "Успешно сконвертировано с помощью Anthropic Claude"
+            
+        except requests.exceptions.Timeout:
+            return False, chunk, f"Превышен таймаут запроса к Anthropic API ({self.api_timeout} секунд)"
+        except Exception as e:
+            return False, chunk, f"Ошибка при запросе к Anthropic: {str(e)}"
+    
+    def _post_process_large_script(self, script: str) -> str:
+        """
+        Выполняет дополнительную обработку объединенного большого скрипта
+        
+        Args:
+            script: Объединенный скрипт после конвертации частей
+            
+        Returns:
+            str: Обработанный скрипт с исправлениями
+        """
+        # Удаляем дублирующиеся комментарии о том, что это часть таблицы
+        script = re.sub(r'\s*-- Часть таблицы, продолжение в следующем блоке\s*\)\s*CREATE\s+TABLE.*?\(\s*-- Продолжение таблицы', 
+                        '', script, flags=re.DOTALL)
+        
+        # Удаляем дублирующиеся INSERT INTO одной и той же таблицы, если они идут подряд
+        # Исправленная версия без использования \K
+        pattern = r'(INSERT\s+INTO\s+[^\s(]+(?:\s*\([^)]+\))?\s+VALUES\s+)(?:\([^;]+;\s*)(\1)'
+        script = re.sub(pattern, r'\2', script, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Применяем стандартную постобработку SQL
+        script = self._post_process_sql(script)
+        
+        return script

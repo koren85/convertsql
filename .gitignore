@@ -36,7 +36,7 @@ logs/
 *.json
 reports/
 converted/
-
+chunks/
 # IDE
 .idea/
 .vscode/
