@@ -11,14 +11,25 @@ import time
 from dotenv import load_dotenv, find_dotenv
 
 # Загружаем переменные из .env файла
+print(f"Текущая рабочая директория: {os.getcwd()}")
 env_path = find_dotenv(usecwd=True)
 if env_path:
-    load_dotenv(dotenv_path=env_path)
+    print(f"Найден .env файл: {env_path}")
+    load_dotenv(dotenv_path=env_path, override=True)
+    print(f"PG_DATABASE из окружения: {os.getenv('PG_DATABASE', 'НЕ УСТАНОВЛЕНА')}")
 else:
     print("Файл .env не найден. Используются значения по умолчанию.")
+    # Попробуем загрузить .env из текущей директории принудительно
+    local_env = Path('.env')
+    if local_env.exists():
+        print(f"Найден локальный .env файл: {local_env.absolute()}")
+        load_dotenv(dotenv_path=local_env, override=True)
+        print(f"PG_DATABASE из окружения после принудительной загрузки: {os.getenv('PG_DATABASE', 'НЕ УСТАНОВЛЕНА')}")
 
-# Импортируем наши модули
+# Импортируем наши модули (ПОСЛЕ загрузки .env)
 import config
+print(f"Config PG_DATABASE: {config.PG_CONFIG['database']}")
+print(f"Config connection string: {config.PG_CONNECTION_STRING}")
 from src.parser import SQLParser
 from src.converter import SQLConverter
 from src.postgres_tester import PostgresTester

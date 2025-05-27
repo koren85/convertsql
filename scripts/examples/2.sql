@@ -1,0 +1,1770 @@
+DECLARE @type INT
+SET @type = #type#
+--SET @type = 1
+
+
+DECLARE @SQL_RAYON VARCHAR(MAX)
+SET @SQL_RAYON = '
+
+DECLARE @startDateNull DATETIME
+SET @startDateNull = CONVERT(DATETIME, ''19000101'', 120)
+
+DECLARE @NoUchet INT
+SET @NoUchet = (SELECT OUID FROM SPR_PC_STATUS WHERE A_CODE = 4)
+
+DECLARE @stClose INT
+SET @stClose = (SELECT A_ID FROM SPR_STATUS_PAYMENT WHERE A_CODE = 10)
+
+IF (#A_IS_STATUS_LD# = 1)
+  SET @NoUchet = 0
+--IF (0 = 1)
+--  SET @NoUchet = 0
+
+DECLARE @approvedStatus INT
+       ,@stopStatus INT
+       ,@stayStatus INT
+
+SET @approvedStatus = (SELECT A_ID FROM SPR_STATUS_PROCESS WHERE A_CODE = 100)
+SET @stopStatus = (SELECT A_ID FROM SPR_STATUS_PROCESS WHERE A_CODE = 2)
+SET @stayStatus = (SELECT A_ID FROM SPR_STATUS_PROCESS WHERE A_CODE = 1)
+/* Если не установлена галочка "Анализировать приостанов", то назначения в статусе "Приостановление временное" не анализируются */
+IF (#IS_STAY# = 0)
+  SET @stayStatus = 0
+--IF (0 = 0)
+--  SET @stayStatus = 0
+
+/* Исключить при сборе умершие лица-основания без снилса */
+DECLARE @A_DEAD_CHILD_NO_SNILS BIT
+SET @A_DEAD_CHILD_NO_SNILS = #A_DEAD_CHILD_NO_SNILS#
+--SET @A_DEAD_CHILD_NO_SNILS = 1
+
+
+IF OBJECT_ID(''TEMP_FACT'', ''U'') IS NOT NULL
+	DROP TABLE TEMP_FACT
+
+CREATE TABLE TEMP_FACT (
+  MSZ INT NULL
+ ,LKMSZ INT NULL
+ ,MSPLKNPD VARCHAR(50) NULL
+ ,STATUSPRIVELEGE INT NULL
+ ,ID_FACT VARCHAR(50) NULL
+ ,PERSON_LG VARCHAR(50) NULL
+ ,SERVDATE DATETIME NULL
+ ,STARTDATE DATETIME NULL
+ ,LASTDATE DATETIME NULL
+ ,SERVPAYAMOUNT_LASTDATE DATETIME NULL
+ ,PERS_GUID VARCHAR(5000) NULL
+ ,A_AMOUNT FLOAT NULL
+ ,org VARCHAR(50) NULL
+ ,A_HASH INT NULL
+  /* Поля для неденежных МСП */
+ ,A_NON_MONETARY_FORM_AMOUNT FLOAT NULL /* Размер (Количество) */
+ ,A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT FLOAT NULL /* Эквивалент в рублях */
+ ,A_CODE_PROVISION_FORM INT NULL
+ ,A_PERIODICITY_CODE INT NULL
+ ,A_STOPDATE DATETIME NULL
+)
+
+CREATE NONCLUSTERED INDEX IDX_TEMP_FACT_A_PERIODICITY_CODE
+ON TEMP_FACT (A_PERIODICITY_CODE)
+INCLUDE (MSZ, LKMSZ, ID_FACT, STARTDATE, LASTDATE, A_AMOUNT, A_NON_MONETARY_FORM_AMOUNT, A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT)
+
+DECLARE @endDateNull DATETIME
+SET @endDateNull = CONVERT(DATETIME, ''2100-01-01'', 120)
+  
+DECLARE @getDate DATETIME
+       ,@start_date DATETIME
+       ,@end_date DATETIME
+
+SET @getDate = DATEADD(MONTH, 1, GETDATE()) - DAY(DATEADD(MONTH, 1, GETDATE()))
+SET @start_date = CASE WHEN YEAR(ISNULL(CONVERT(DATETIME, ''#dateBegin#'', 120), GETDATE())) < 1980 THEN GETDATE() ELSE CONVERT(DATETIME, ''#dateBegin#'', 120) END
+
+IF @start_date IS NULL OR @start_date = ''''
+  SET @start_date = @getDate
+
+SET @end_date = @getDate
+
+IF (DATEDIFF(DAY, @end_date, @start_date) > 0)
+  SET @start_date = @end_date--'
+
+
+/* Отдельно обрабатываем МСЗ с произвольной привязкой */
+DECLARE @SNMC_GUID VARCHAR(50)
+       ,@SQL_MSZ VARCHAR(8000)
+       ,@SQL_CAT VARCHAR(8000)
+       ,@SQL_AMOUNT VARCHAR(8000)
+
+/* Те, у которых заполнены поля "Скрипт определения МСЗ" и "Скрипт определения категории" */
+DECLARE snmcCur CURSOR FOR
+SELECT DISTINCT
+  snmc.GUID
+ ,fc.SQL_MSZ
+ ,fc.SQL_CAT
+FROM SPR_NPD_MSP_CAT snmc
+INNER JOIN EGISSO_NEW_PARAM_COLLECT_FACT_CENTR fc
+  ON fc.MSP_LK_NPD = snmc.GUID
+WHERE (fc.SQL_MSZ IS NOT NULL
+  OR fc.SQL_CAT IS NOT NULL)
+  AND ISNULL(fc.A_IS_GKU, 0) = 0
+  AND fc.A_SQL_AMOUNT IS NULL
+
+OPEN snmcCur
+
+FETCH NEXT FROM snmcCur INTO @SNMC_GUID, @SQL_MSZ, @SQL_CAT
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+
+--IF (@type = 1)
+SET @SQL_RAYON = @SQL_RAYON + '
+/* Размер назначения
+*/
+INSERT INTO TEMP_FACT (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, A_AMOUNT, org,
+A_CODE_PROVISION_FORM, A_PERIODICITY_CODE)
+  SELECT DISTINCT
+    ' + @SQL_MSZ + ' MSZ
+   ,' + @SQL_CAT + ' LKMSZ
+   ,snmc.GUID MSPLKNPD
+   ,ess.A_STATUSPRIVELEGE STATUSPRIVELEGE
+   ,ess.GUID AS ID_FACT
+   ,wpc.GUID AS PERSON_LG
+   ,ess.A_SERVDATE SERVDATE
+   ,wpa.A_DATESTART STARTDATE
+   ,wpa.A_DATELAST LASTDATE
+   ,ISNULL(wpa.A_AMOUNT, 0) A_AMOUNT
+   ,sob.GUID org
+   ,fc.A_CODE_PROVISION_FORM
+   ,fc.A_PERIODICITY_CODE
+  FROM SPR_NPD_MSP_CAT snmc
+  INNER JOIN EGISSO_NEW_PARAM_COLLECT_FACT fc
+    ON fc.MSP_LK_NPD = snmc.GUID
+  INNER JOIN ESRN_SERV_SERV ess
+    ON snmc.A_ID = ess.A_SERV
+  INNER JOIN SPR_SERV_PERIOD ssp
+    ON ess.OUID = ssp.A_SERV
+
+  INNER JOIN WM_PERSONAL_CARD wpc
+    ON ess.A_PERSONOUID = wpc.OUID
+  /* Размер назначения */
+  INNER JOIN WM_SERVPAYAMOUNT wpa
+    ON wpa.A_MSP = ess.OUID
+
+  LEFT JOIN WM_PETITION wp
+    ON ess.A_REQUEST = wp.OUID
+    AND ISNULL(wp.A_STATUS, 10) = 10
+
+  LEFT JOIN SPR_ORG_BASE sob
+    ON ess.A_ORGNAME = sob.OUID
+    AND ISNULL(sob.A_STATUS, 10) = 10
+
+  WHERE snmc.GUID = ''' + @SNMC_GUID + '''
+  AND fc.A_CODE_PROVISION_FORM = 1
+  AND fc.A_SOURCE_TYPE = 1
+  AND ess.A_STATUSPRIVELEGE IN (@approvedStatus, @stopStatus, @stayStatus)
+  AND DATEDIFF(DAY, ssp.STARTDATE, DATEADD(MONTH, fc.A_SHIFT, @end_date)) >= 0
+  AND DATEDIFF(DAY, DATEADD(MONTH, fc.A_SHIFT, @start_date), ISNULL(ssp.A_LASTDATE, DATEADD(MONTH, fc.A_SHIFT, @end_date))) >= 0
+  AND wpc.A_PCSTATUS != @NoUchet
+  /*AND DATEDIFF(DAY, wpa.A_DATESTART, DATEADD(MONTH, fc.A_SHIFT, @end_date)) >= 0*/
+  AND DATEDIFF(DAY, DATEADD(MONTH, fc.A_SHIFT, @start_date), ISNULL(wpa.A_DATELAST, DATEADD(MONTH, fc.A_SHIFT, @start_date))) >= 0
+  AND NOT (ess.A_FACTS_ARCHIVED IS NOT NULL AND ess.A_FACTS_ARCHIVED != 0)
+
+  AND ISNULL(snmc.A_STATUS, 10) = 10
+  AND ISNULL(ess.A_STATUS, 10) = 10
+  AND ISNULL(ssp.A_STATUS, 10) = 10
+  AND ISNULL(wpc.A_STATUS, 10) = 10
+  AND ISNULL(wpa.A_STATUS, 10) = 10'
+--ELSE
+
+SET @SQL_RAYON = @SQL_RAYON + '
+/* К начислению
+*/
+INSERT INTO TEMP_FACT (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, A_AMOUNT, org,
+A_CODE_PROVISION_FORM, A_PERIODICITY_CODE)
+  SELECT DISTINCT
+    ' + @SQL_MSZ + ' MSZ
+   ,' + @SQL_CAT + ' LKMSZ
+   ,snmc.GUID MSPLKNPD
+   ,ess.A_STATUSPRIVELEGE STATUSPRIVELEGE
+   ,ess.GUID AS ID_FACT
+   ,wpc.GUID AS PERSON_LG
+   ,ess.A_SERVDATE SERVDATE
+   ,wsa.A_DATESTART STARTDATE
+   ,wsa.A_DATELAST LASTDATE
+   ,ISNULL(wsa.A_AMOUNT, 0) A_AMOUNT
+   ,sob.GUID org
+   ,fc.A_CODE_PROVISION_FORM
+   ,fc.A_PERIODICITY_CODE
+  FROM SPR_NPD_MSP_CAT snmc
+  INNER JOIN EGISSO_NEW_PARAM_COLLECT_FACT fc
+    ON fc.MSP_LK_NPD = snmc.GUID
+  INNER JOIN ESRN_SERV_SERV ess
+    ON snmc.A_ID = ess.A_SERV
+  INNER JOIN SPR_SERV_PERIOD ssp
+    ON ess.OUID = ssp.A_SERV
+
+  INNER JOIN WM_PERSONAL_CARD wpc
+    ON ess.A_PERSONOUID = wpc.OUID
+  /* К начислению */
+  INNER JOIN WM_SERV_AMOUNT wsa
+    ON ess.OUID = wsa.A_MSP
+
+  LEFT JOIN WM_PETITION wp
+    ON ess.A_REQUEST = wp.OUID
+    AND ISNULL(wp.A_STATUS, 10) = 10
+
+  LEFT JOIN SPR_ORG_BASE sob
+    ON ess.A_ORGNAME = sob.OUID
+    AND ISNULL(sob.A_STATUS, 10) = 10
+
+  WHERE snmc.GUID = ''' + @SNMC_GUID + '''
+  AND fc.A_CODE_PROVISION_FORM = 1
+  AND fc.A_SOURCE_TYPE = 2
+  AND ess.A_STATUSPRIVELEGE IN (@approvedStatus, @stopStatus, @stayStatus)
+  AND DATEDIFF(DAY, ssp.STARTDATE, DATEADD(MONTH, fc.A_SHIFT, @end_date)) >= 0
+  AND DATEDIFF(DAY, DATEADD(MONTH, fc.A_SHIFT, @start_date), ISNULL(ssp.A_LASTDATE, DATEADD(MONTH, fc.A_SHIFT, @end_date))) >= 0
+  AND wpc.A_PCSTATUS != @NoUchet
+
+  /*AND DATEDIFF(DAY, wsa.A_DATESTART, DATEADD(MONTH, fc.A_SHIFT, @end_date)) >= 0*/
+  AND DATEDIFF(DAY, DATEADD(MONTH, fc.A_SHIFT, @start_date), ISNULL(wsa.A_DATELAST, DATEADD(MONTH, fc.A_SHIFT, @start_date))) >= 0
+  AND NOT (ess.A_FACTS_ARCHIVED IS NOT NULL
+  AND ess.A_FACTS_ARCHIVED != 0)
+
+  AND ISNULL(snmc.A_STATUS, 10) = 10
+  AND ISNULL(ess.A_STATUS, 10) = 10
+  AND ISNULL(ssp.A_STATUS, 10) = 10
+  AND ISNULL(wpc.A_STATUS, 10) = 10
+  AND ISNULL(wsa.A_STATUS, 10) = 10'
+
+SET @SQL_RAYON = @SQL_RAYON + '
+INSERT INTO TEMP_FACT (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, A_AMOUNT, org,
+A_CODE_PROVISION_FORM, A_PERIODICITY_CODE)
+  SELECT
+    x.MSZ
+   ,x.LKMSZ
+   ,x.MSPLKNPD
+   ,x.STATUSPRIVELEGE
+   ,x.ID_FACT
+   ,x.PERSON_LG
+   ,x.SERVDATE
+   ,DATEADD(DAY, 1 - DAY(x.COMMON_DATE), x.COMMON_DATE) STARTDATE
+   ,DATEADD(MONTH, 1, x.COMMON_DATE) - DAY(DATEADD(MONTH, 1, x.COMMON_DATE)) LASTDATE
+   ,SUM(x.A_AMOUNT)
+   ,x.org
+   ,x.A_CODE_PROVISION_FORM
+   ,x.A_PERIODICITY_CODE
+  FROM (SELECT TOP 1 WITH TIES
+     ' + @SQL_MSZ + ' MSZ
+     ,' + @SQL_CAT + ' LKMSZ
+     ,snmc.GUID MSPLKNPD
+     ,ess.A_STATUSPRIVELEGE STATUSPRIVELEGE
+     ,ess.GUID ID_FACT
+     ,wpc.GUID PERSON_LG
+     ,ess.A_SERVDATE SERVDATE
+     ,CONVERT(DATETIME, STR(payHist.A_DOCYEAR, 4, 0) + ''-'' + STR(sm.A_CODE, 2, 0) + ''-1 12:00:00.000'', 120) COMMON_DATE
+     ,ISNULL(paid.AMOUNT, 0) A_AMOUNT
+     ,sob.GUID org
+     ,fc.A_CODE_PROVISION_FORM
+     ,fc.A_PERIODICITY_CODE
+    FROM SPR_NPD_MSP_CAT snmc
+    INNER JOIN EGISSO_NEW_PARAM_COLLECT_FACT fc
+      ON fc.MSP_LK_NPD = snmc.GUID
+    INNER JOIN ESRN_SERV_SERV ess
+      ON snmc.A_ID = ess.A_SERV
+    INNER JOIN WM_PERSONAL_CARD wpc
+      ON ess.A_PERSONOUID = wpc.OUID
+    INNER JOIN SPR_SERV_PERIOD ssp
+      ON ess.OUID = ssp.A_SERV
+
+    /* Выплаты */
+    INNER JOIN WM_PAY_CALC calc
+      ON ess.OUID = calc.A_MSP
+    INNER JOIN WM_PAIDAMOUNTS paid
+      ON calc.OUID = paid.A_PAYCALC
+    INNER JOIN PAYHISTORY payHist
+      ON paid.OUID = payHist.A_PAIDAMOUNT
+    INNER JOIN SPR_MONTH sm
+      ON payHist.A_DOCMONTH = sm.A_ID
+
+    LEFT JOIN WM_PETITION wp
+      ON ess.A_REQUEST = wp.OUID
+      AND ISNULL(wp.A_STATUS, 10) = 10
+
+    LEFT JOIN SPR_ORG_BASE sob
+      ON ess.A_ORGNAME = sob.OUID
+
+    WHERE snmc.GUID = ''' + @SNMC_GUID + '''
+    AND fc.A_CODE_PROVISION_FORM = 1
+    AND fc.A_SOURCE_TYPE = 3
+    AND ess.A_STATUSPRIVELEGE IN (@approvedStatus, @stopStatus, @stayStatus)
+    AND paid.A_STATUSPRIVELEGE = @stClose
+
+    /* Период предоставления */
+    AND DATEDIFF(DAY, ssp.STARTDATE, DATEADD(MONTH, fc.A_SHIFT, @end_date)) >= 0
+    AND DATEDIFF(DAY, DATEADD(MONTH, fc.A_SHIFT, @start_date), ISNULL(ssp.A_LASTDATE, DATEADD(MONTH, fc.A_SHIFT, @end_date))) >= 0
+
+    --AND DATEDIFF(DAY, wpa.A_DATESTART, DATEADD(MONTH, fc.A_SHIFT, @end_date)) >= 0
+    AND DATEDIFF(DAY, DATEADD(MONTH, fc.A_SHIFT, @start_date), ISNULL(CONVERT(DATETIME, STR(payHist.A_DOCYEAR, 4, 0) + ''-'' + STR(sm.A_CODE, 2, 0) + ''-1 12:00:00.000'', 120), DATEADD(MONTH, fc.A_SHIFT, @start_date))) >= 0
+
+    AND wpc.A_PCSTATUS != @NoUchet
+
+    AND fc.SQL_MSZ IS NULL
+    AND fc.SQL_CAT IS NULL
+    AND fc.A_SQL_AMOUNT IS NULL
+    AND fc.OUID_MSZ IS NOT NULL
+    AND fc.OUID_CAT IS NOT NULL
+    AND ISNULL(fc.A_IS_GKU, 0) = 0
+    AND NOT (ess.A_FACTS_ARCHIVED IS NOT NULL
+    AND ess.A_FACTS_ARCHIVED != 0)
+
+    AND ISNULL(snmc.A_STATUS, 10) = 10
+    AND ISNULL(ess.A_STATUS, 10) = 10
+    AND ISNULL(wpc.A_STATUS, 10) = 10
+    AND ISNULL(ssp.A_STATUS, 10) = 10
+    AND ISNULL(calc.A_STATUS, 10) = 10
+    AND ISNULL(paid.A_STATUS, 10) = 10
+    AND ISNULL(payHist.A_STATUS, 10) = 10
+
+    ORDER BY ROW_NUMBER() OVER (PARTITION BY
+    paid.OUID
+    ORDER BY payHist.A_DOCYEAR DESC, sm.A_CODE DESC, payHist.A_ID DESC)) x
+  GROUP BY x.MSZ
+          ,x.LKMSZ
+          ,x.MSPLKNPD
+          ,x.STATUSPRIVELEGE
+          ,x.ID_FACT
+          ,x.PERSON_LG
+          ,x.SERVDATE
+          ,x.COMMON_DATE
+          ,x.org
+          ,x.A_CODE_PROVISION_FORM
+          ,x.A_PERIODICITY_CODE'
+
+  FETCH NEXT FROM snmcCur INTO @SNMC_GUID, @SQL_MSZ, @SQL_CAT
+END   
+CLOSE snmcCur
+DEALLOCATE snmcCur
+
+/* Те, у которых заполнено поле "Скрипт определения размера по услуге" */
+DECLARE @OUID_MSZ VARCHAR(255)
+       ,@OUID_CAT VARCHAR(255)
+
+DECLARE snmcCur CURSOR FOR
+SELECT DISTINCT
+  snmc.GUID
+ ,CAST(fc.OUID_MSZ AS VARCHAR(255))
+ ,CAST(fc.OUID_CAT AS VARCHAR(255))
+ ,fc.A_SQL_AMOUNT
+FROM SPR_NPD_MSP_CAT snmc
+INNER JOIN EGISSO_NEW_PARAM_COLLECT_FACT_CENTR fc
+  ON fc.MSP_LK_NPD = snmc.GUID
+WHERE fc.A_SQL_AMOUNT IS NOT NULL
+  AND fc.OUID_MSZ IS NOT NULL
+  AND fc.OUID_CAT IS NOT NULL
+  AND ISNULL(fc.A_IS_GKU, 0) = 0
+
+OPEN snmcCur
+
+FETCH NEXT FROM snmcCur INTO @SNMC_GUID, @OUID_MSZ, @OUID_CAT, @SQL_AMOUNT
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+  SET @SQL_RAYON = @SQL_RAYON + '
+/* Размер назначения
+*/
+INSERT INTO TEMP_FACT (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, A_AMOUNT, org,
+A_CODE_PROVISION_FORM, A_PERIODICITY_CODE)
+  SELECT DISTINCT
+    fc.OUID_MSZ MSZ
+   ,fc.OUID_CAT LKMSZ
+   ,snmc.GUID MSPLKNPD
+   ,ess.A_STATUSPRIVELEGE STATUSPRIVELEGE
+   ,ess.GUID AS ID_FACT
+   ,wpc.GUID AS PERSON_LG
+   ,ess.A_SERVDATE SERVDATE
+   ,wpa.A_DATESTART STARTDATE
+   ,wpa.A_DATELAST LASTDATE
+   ,ISNULL(' + @SQL_AMOUNT + ', -1) A_AMOUNT
+   ,sob.GUID org
+   ,fc.A_CODE_PROVISION_FORM
+   ,fc.A_PERIODICITY_CODE
+  FROM SPR_NPD_MSP_CAT snmc
+  INNER JOIN EGISSO_NEW_PARAM_COLLECT_FACT fc
+    ON fc.MSP_LK_NPD = snmc.GUID
+  INNER JOIN ESRN_SERV_SERV ess
+    ON snmc.A_ID = ess.A_SERV
+  INNER JOIN SPR_SERV_PERIOD ssp
+    ON ess.OUID = ssp.A_SERV
+
+  INNER JOIN WM_PERSONAL_CARD wpc
+    ON ess.A_PERSONOUID = wpc.OUID
+  /* Размер назначения */
+  INNER JOIN WM_SERVPAYAMOUNT wpa
+    ON wpa.A_MSP = ess.OUID
+
+  LEFT JOIN SPR_ORG_BASE sob
+    ON ess.A_ORGNAME = sob.OUID
+    AND ISNULL(sob.A_STATUS, 10) = 10
+
+  WHERE snmc.GUID = ''' + @SNMC_GUID + '''
+  AND fc.A_CODE_PROVISION_FORM = 1
+  AND fc.OUID_MSZ = ' + @OUID_MSZ + '
+  AND fc.OUID_CAT = ' + @OUID_CAT + '
+  AND ess.A_STATUSPRIVELEGE IN (@approvedStatus, @stopStatus, @stayStatus)
+  AND DATEDIFF(DAY, ssp.STARTDATE, DATEADD(MONTH, fc.A_SHIFT, @end_date)) >= 0
+  AND DATEDIFF(DAY, DATEADD(MONTH, fc.A_SHIFT, @start_date), ISNULL(ssp.A_LASTDATE, DATEADD(MONTH, fc.A_SHIFT, @end_date))) >= 0
+  AND wpc.A_PCSTATUS != @NoUchet
+  /*AND DATEDIFF(DAY, wpa.A_DATESTART, DATEADD(MONTH, fc.A_SHIFT, @end_date)) >= 0*/
+  AND DATEDIFF(DAY, DATEADD(MONTH, fc.A_SHIFT, @start_date), ISNULL(wpa.A_DATELAST, DATEADD(MONTH, fc.A_SHIFT, @start_date))) >= 0
+  AND NOT (ess.A_FACTS_ARCHIVED IS NOT NULL AND ess.A_FACTS_ARCHIVED != 0)
+
+  AND ISNULL(snmc.A_STATUS, 10) = 10
+  AND ISNULL(ess.A_STATUS, 10) = 10
+  AND ISNULL(ssp.A_STATUS, 10) = 10
+  AND ISNULL(wpc.A_STATUS, 10) = 10
+  AND ISNULL(wpa.A_STATUS, 10) = 10'
+
+  FETCH NEXT FROM snmcCur INTO @SNMC_GUID, @OUID_MSZ, @OUID_CAT, @SQL_AMOUNT
+END
+CLOSE snmcCur
+DEALLOCATE snmcCur
+
+/* Те, у которых заполнены поля "Скрипт определения МСЗ", "Скрипт определения категории" и "Скрипт определения размера по услуге" */
+
+DECLARE snmcCur CURSOR FOR
+SELECT DISTINCT
+  snmc.GUID
+ ,fc.SQL_MSZ
+ ,fc.SQL_CAT
+ ,fc.A_SQL_AMOUNT
+FROM SPR_NPD_MSP_CAT snmc
+INNER JOIN EGISSO_NEW_PARAM_COLLECT_FACT_CENTR fc
+  ON fc.MSP_LK_NPD = snmc.GUID
+WHERE (fc.SQL_MSZ IS NOT NULL
+OR fc.SQL_CAT IS NOT NULL)
+AND ISNULL(fc.A_IS_GKU, 0) = 0
+AND fc.A_SQL_AMOUNT IS NOT NULL
+
+OPEN snmcCur
+
+FETCH NEXT FROM snmcCur INTO @SNMC_GUID, @SQL_MSZ, @SQL_CAT, @SQL_AMOUNT
+
+WHILE @@FETCH_STATUS = 0  
+BEGIN  
+  SET @SQL_RAYON = @SQL_RAYON + '
+/* Размер назначения */
+INSERT INTO TEMP_FACT (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, A_AMOUNT, org,
+A_CODE_PROVISION_FORM, A_PERIODICITY_CODE)
+  SELECT DISTINCT
+    ' + @SQL_MSZ + ' MSZ
+   ,' + @SQL_CAT + ' LKMSZ
+   ,snmc.GUID MSPLKNPD
+   ,ess.A_STATUSPRIVELEGE STATUSPRIVELEGE
+   ,ess.GUID AS ID_FACT
+   ,wpc.GUID AS PERSON_LG
+   ,ess.A_SERVDATE SERVDATE
+   ,wpa.A_DATESTART STARTDATE
+   ,wpa.A_DATELAST LASTDATE
+   ,CAST(ISNULL(' + @SQL_AMOUNT + ', -1) AS DECIMAL(10, 2)) A_AMOUNT
+   ,sob.GUID org
+   ,fc.A_CODE_PROVISION_FORM
+   ,fc.A_PERIODICITY_CODE
+  FROM SPR_NPD_MSP_CAT snmc
+  INNER JOIN EGISSO_NEW_PARAM_COLLECT_FACT fc
+    ON fc.MSP_LK_NPD = snmc.GUID
+  INNER JOIN ESRN_SERV_SERV ess
+    ON snmc.A_ID = ess.A_SERV
+  INNER JOIN SPR_SERV_PERIOD ssp
+    ON ess.OUID = ssp.A_SERV
+  INNER JOIN WM_PERSONAL_CARD wpc
+    ON ess.A_PERSONOUID = wpc.OUID
+
+  /* Размер назначения */
+  INNER JOIN WM_SERVPAYAMOUNT wpa
+    ON wpa.A_MSP = ess.OUID
+
+  LEFT JOIN SPR_ORG_BASE sob
+    ON ess.A_ORGNAME = sob.OUID
+    AND ISNULL(sob.A_STATUS, 10) = 10
+
+  WHERE snmc.GUID = ''' + @SNMC_GUID + '''
+  AND fc.A_CODE_PROVISION_FORM = 1
+  AND ess.A_STATUSPRIVELEGE IN (@approvedStatus, @stopStatus, @stayStatus)
+  AND DATEDIFF(DAY, ssp.STARTDATE, DATEADD(MONTH, fc.A_SHIFT, @end_date)) >= 0
+  AND DATEDIFF(DAY, DATEADD(MONTH, fc.A_SHIFT, @start_date), ISNULL(ssp.A_LASTDATE, DATEADD(MONTH, fc.A_SHIFT, @end_date))) >= 0
+  AND wpc.A_PCSTATUS != @NoUchet
+  /*AND DATEDIFF(DAY, wpa.A_DATESTART, DATEADD(MONTH, fc.A_SHIFT, @end_date)) >= 0*/
+  AND DATEDIFF(DAY, DATEADD(MONTH, fc.A_SHIFT, @start_date), ISNULL(wpa.A_DATELAST, DATEADD(MONTH, fc.A_SHIFT, @start_date))) >= 0
+  AND NOT (ess.A_FACTS_ARCHIVED IS NOT NULL AND ess.A_FACTS_ARCHIVED != 0)
+
+  AND ISNULL(snmc.A_STATUS, 10) = 10
+  AND ISNULL(ess.A_STATUS, 10) = 10
+  AND ISNULL(ssp.A_STATUS, 10) = 10
+  AND ISNULL(wpc.A_STATUS, 10) = 10
+  AND ISNULL(wpa.A_STATUS, 10) = 10'
+
+  FETCH NEXT FROM snmcCur INTO @SNMC_GUID, @SQL_MSZ, @SQL_CAT, @SQL_AMOUNT
+END   
+CLOSE snmcCur
+DEALLOCATE snmcCur
+
+SET @SQL_RAYON = @SQL_RAYON + '
+/* Для ЕДК по ЖКУ удаляем размер по тем услугам, которых нет в расчете */
+DELETE FROM TEMP_FACT WHERE A_AMOUNT = -1
+
+/* Если в КМСЗ не заполнено поле "Не учитывать Лицо, на основании данных ЛД", то собираем Лицо, на основании данных */
+UPDATE tmpFact
+SET PERS_GUID =
+             CASE
+               WHEN @A_DEAD_CHILD_NO_SNILS = 1 AND
+                 wpcCHILD.A_DEATHDATE IS NOT NULL AND
+                 wpcCHILD.A_SNILS IS NULL THEN NULL
+               ELSE wpcCHILD.GUID
+             END
+FROM TEMP_FACT tmpFact
+INNER JOIN ESRN_SERV_SERV ess
+  ON tmpFact.ID_FACT = ess.GUID
+INNER JOIN WM_PERSONAL_CARD wpcCHILD
+  ON ess.A_CHILD = wpcCHILD.OUID
+
+WHERE EXISTS (SELECT
+    1
+  FROM EGISSO_NEW_PARAM_COLLECT_FACT pcf
+  WHERE tmpFact.MSPLKNPD = pcf.MSP_LK_NPD
+  AND ISNULL(pcf.A_IS_CHOLD, 0) = 0)
+
+  AND ISNULL(wpcCHILD.A_STATUS, 10) = 10
+
+
+/* Если в КМСЗ не заполнено поле "Не учитывать граждан, по которым проводится расчет", то собираем граждан, по которым проводится расчет */
+UPDATE tmpFact
+SET PERS_GUID = ISNULL(PERS_GUID + '','', '''') + ISNULL(CAST(STUFF((SELECT DISTINCT
+    '','' + wpc.GUID
+  FROM SPR_LINK_SDD_PET spr_sdd
+  INNER JOIN WM_PERSONAL_CARD wpc
+    ON spr_sdd.TOID = wpc.OUID
+  WHERE spr_sdd.FROMID = wp.OUID
+  FOR XML PATH (''''))
+, 1, 1, '''') AS VARCHAR(5000)), '''')
+FROM TEMP_FACT tmpFact
+INNER JOIN ESRN_SERV_SERV ess
+  ON tmpFact.ID_FACT = ess.GUID
+INNER JOIN WM_PETITION wp
+  ON ess.A_REQUEST = wp.OUID
+
+WHERE EXISTS (SELECT
+    1
+  FROM EGISSO_NEW_PARAM_COLLECT_FACT pcf
+  WHERE tmpFact.MSPLKNPD = pcf.MSP_LK_NPD
+  AND ISNULL(pcf.A_IS_INCOM, 0) = 0)
+
+
+/* Если в КМСЗ не заполнено поле "Не учитывать область распространения", то собираем область распространения */
+UPDATE tmpFact
+SET PERS_GUID = ISNULL(PERS_GUID + '','', '''') + ISNULL(CAST(STUFF((SELECT DISTINCT
+    '','' + wpc.GUID
+  FROM SPR_LINK_MSP_PERSON serv_pers
+  INNER JOIN WM_PERSONAL_CARD wpc
+    ON serv_pers.TOID = wpc.OUID
+  WHERE serv_pers.FROMID = ess.OUID
+  /*AND DATEDIFF(MONTH, ISNULL(serv_pers.A_START_DATE, DATEADD(MONTH, pcf.A_SHIFT, @start_date)), DATEADD(MONTH, pcf.A_SHIFT, @end_date)) >= 0*/
+  AND DATEDIFF(MONTH, DATEADD(MONTH, pcf.A_SHIFT, @start_date), ISNULL(serv_pers.A_END_DATE, DATEADD(MONTH, pcf.A_SHIFT, @start_date))) >= 0
+  FOR XML PATH (''''))
+, 1, 1, '''') AS VARCHAR(5000)), '''')
+FROM TEMP_FACT tmpFact
+INNER JOIN ESRN_SERV_SERV ess
+  ON tmpFact.ID_FACT = ess.GUID
+INNER JOIN EGISSO_NEW_PARAM_COLLECT_FACT pcf
+  ON tmpFact.MSPLKNPD = pcf.MSP_LK_NPD
+
+WHERE ISNULL(pcf.A_IS_SPHERE, 0) = 0
+
+
+/* Анализировать приостанов (если у назначения есть приостанов, то дату окончания факта брать дату приостанова) */
+IF (#IS_STAY# = 1)
+--IF (0 = 1)
+BEGIN
+
+  IF OBJECT_ID(''TEMP_FACT_PRIOSTANOV'', ''U'') IS NOT NULL
+    DROP TABLE TEMP_FACT_PRIOSTANOV
+
+  CREATE TABLE TEMP_FACT_PRIOSTANOV (
+    A_OUID INT IDENTITY (1, 1) NOT NULL PRIMARY KEY CLUSTERED
+   ,MSZ INT
+   ,LKMSZ INT
+   ,MSPLKNPD VARCHAR(50)
+   ,STATUSPRIVELEGE INT
+   ,ID_FACT VARCHAR(50)
+   ,PERSON_LG VARCHAR(50)
+   ,SERVDATE DATETIME
+   ,STARTDATE DATETIME
+   ,LASTDATE DATETIME
+   ,PERS_GUID VARCHAR(5000) NULL
+   ,A_AMOUNT FLOAT
+   ,org VARCHAR(50)
+   ,A_HASH INT
+    /* Для неденежных МСП */
+   ,A_NON_MONETARY_FORM_AMOUNT FLOAT NULL /* Размер */
+   ,A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT FLOAT NULL /* Эквивалент в рублях */
+   ,A_CODE_PROVISION_FORM INT NULL
+   ,A_PERIODICITY_CODE INT NULL
+   ,A_STOPDATE DATETIME NULL
+   ,PRIOSTANOV_ID INT NULL
+   ,A_DATE_FINISH DATETIME NULL
+   ,A_DATEENDFINISH DATETIME NULL
+   ,STARTDATE_PARCE_LEFT DATETIME NULL
+   ,LASTDATE_PARCE_LEFT DATETIME NULL
+   ,STARTDATE_PARCE_RIGHT DATETIME NULL
+   ,LASTDATE_PARCE_RIGHT DATETIME NULL
+   ,PREVIOS_ID INT NULL
+  )
+
+  IF OBJECT_ID(''tempdb..#TEMP_FACT_4'') IS NOT NULL
+    DROP TABLE #TEMP_FACT_4
+  CREATE TABLE #TEMP_FACT_4 (
+    MSZ INT NULL
+   ,LKMSZ INT NULL
+   ,MSPLKNPD VARCHAR(50)
+   ,STATUSPRIVELEGE INT
+   ,ID_FACT VARCHAR(50)
+   ,PERSON_LG VARCHAR(50)
+   ,SERVDATE DATETIME
+   ,STARTDATE DATETIME
+   ,LASTDATE DATETIME
+   ,STARTDATE_PARCE_LEFT DATETIME
+   ,LASTDATE_PARCE_LEFT DATETIME
+   ,PERS_GUID VARCHAR(MAX)
+   ,A_AMOUNT FLOAT
+   ,org VARCHAR(50)
+   ,A_HASH INT
+   ,A_NON_MONETARY_FORM_AMOUNT FLOAT
+   ,A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT FLOAT
+   ,A_CODE_PROVISION_FORM INT
+   ,A_PERIODICITY_CODE INT
+   ,A_STOPDATE DATETIME
+  )
+
+  IF (#A_TYPE_STOP# = ''10'')
+  BEGIN
+
+    /* Определяем интервалы приостановов */
+    INSERT INTO TEMP_FACT_PRIOSTANOV (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, PERS_GUID, A_AMOUNT, org, A_HASH, A_NON_MONETARY_FORM_AMOUNT,
+    A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, A_CODE_PROVISION_FORM, A_PERIODICITY_CODE, A_STOPDATE, PRIOSTANOV_ID, A_DATE_FINISH, A_DATEENDFINISH, STARTDATE_PARCE_LEFT, LASTDATE_PARCE_LEFT,
+    STARTDATE_PARCE_RIGHT, LASTDATE_PARCE_RIGHT, PREVIOS_ID)
+      SELECT TOP 1 WITH TIES
+        tf.MSZ
+       ,tf.LKMSZ
+       ,tf.MSPLKNPD
+       ,tf.STATUSPRIVELEGE
+       ,tf.ID_FACT
+       ,tf.PERSON_LG
+       ,tf.SERVDATE
+       ,tf.STARTDATE
+       ,tf.LASTDATE
+       ,tf.PERS_GUID
+       ,tf.A_AMOUNT
+       ,tf.org
+       ,tf.A_HASH
+       ,tf.A_NON_MONETARY_FORM_AMOUNT
+       ,tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+       ,tf.A_CODE_PROVISION_FORM
+       ,tf.A_PERIODICITY_CODE
+       ,tf.A_STOPDATE
+       ,priostanov.OUID
+       ,priostanov.A_DATE_FINISH
+       ,priostanov.A_DATEENDFINISH
+       ,NULL STARTDATE_PARCE_LEFT
+       ,NULL LASTDATE_PARCE_LEFT
+       ,NULL STARTDATE_PARCE_RIGHT
+       ,NULL LASTDATE_PARCE_RIGHT
+       ,NULL PREVIOS_ID
+      FROM TEMP_FACT tf
+      INNER JOIN ESRN_SERV_SERV ess
+        ON tf.ID_FACT = ess.GUID
+      /* Берем приостановления со статусом "Приостановление временное" */
+      INNER JOIN WM_STOP_SERVSERV_HIST priostanov
+        ON ess.OUID = priostanov.A_SERV
+        AND priostanov.A_TYPE = ''10''
+        AND DATEDIFF(DAY, tf.STARTDATE, ISNULL(priostanov.A_DATEENDFINISH, @endDateNull)) >= 0
+        AND DATEDIFF(DAY, priostanov.A_DATE_FINISH, ISNULL(tf.LASTDATE, @endDateNull)) >= 0
+        AND ISNULL(priostanov.A_STATUS, 10) = 10
+      ORDER BY ROW_NUMBER() OVER (PARTITION BY tf.MSZ
+      , tf.LKMSZ
+      , tf.MSPLKNPD
+      , tf.STATUSPRIVELEGE
+      , tf.ID_FACT
+      , tf.PERSON_LG
+      , tf.SERVDATE
+      , tf.STARTDATE
+      , tf.LASTDATE
+      , tf.PERS_GUID
+      , tf.A_AMOUNT
+      , tf.org
+      , tf.A_HASH
+      , tf.A_NON_MONETARY_FORM_AMOUNT
+      , tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+      , tf.A_CODE_PROVISION_FORM
+      , tf.A_PERIODICITY_CODE, priostanov.A_DATE_FINISH
+      , priostanov.A_DATEENDFINISH
+      ORDER BY priostanov.A_CREATEDATE DESC)
+
+    /* Дату окончания приостановления обновляем датой ближайшего возобновления */
+    UPDATE tf2
+    SET A_DATEENDFINISH = DATEADD(DAY, -1, t.A_DATE_FINISH)
+    FROM TEMP_FACT_PRIOSTANOV tf2
+    INNER JOIN (SELECT
+        tf2.A_OUID
+       ,MIN(vozob.A_DATE_FINISH) A_DATE_FINISH
+      FROM TEMP_FACT_PRIOSTANOV tf2
+      INNER JOIN ESRN_SERV_SERV ess
+        ON tf2.ID_FACT = ess.GUID
+      /* Возобновление */
+      LEFT JOIN WM_STOP_SERVSERV_HIST vozob
+        ON ess.OUID = vozob.A_SERV
+        AND vozob.A_TYPE = ''20''
+        AND DATEDIFF(DAY, tf2.STARTDATE, ISNULL(vozob.A_DATEENDFINISH, @endDateNull)) >= 0
+        AND DATEDIFF(DAY, vozob.A_DATE_FINISH, ISNULL(tf2.LASTDATE, @endDateNull)) >= 0
+        AND ISNULL(vozob.A_STATUS, 10) = 10
+        AND DATEDIFF(DAY, tf2.A_DATE_FINISH, vozob.A_DATE_FINISH) >= 0
+        AND vozob.OUID > tf2.PRIOSTANOV_ID
+      WHERE tf2.A_DATEENDFINISH IS NULL
+      GROUP BY tf2.A_OUID) t
+      ON tf2.A_OUID = t.A_OUID
+
+    DELETE FROM TEMP_FACT_PRIOSTANOV
+    WHERE DATEDIFF(DAY, ISNULL(A_DATEENDFINISH, @endDateNull), A_DATE_FINISH) >= 0
+
+    UPDATE tf2
+    SET PREVIOS_ID = t.PREVIOS_ID
+    FROM TEMP_FACT_PRIOSTANOV tf2
+    INNER JOIN (SELECT
+        tf2.A_OUID
+       ,MAX(tfPrev.A_OUID) PREVIOS_ID
+      FROM TEMP_FACT_PRIOSTANOV tf2
+      INNER JOIN TEMP_FACT_PRIOSTANOV tfPrev
+        ON tf2.ID_FACT = tfPrev.ID_FACT
+        AND DATEDIFF(DAY, tf2.STARTDATE, tfPrev.STARTDATE) = 0
+        AND DATEDIFF(DAY, ISNULL(tf2.LASTDATE, @endDateNull), ISNULL(tfPrev.LASTDATE, @endDateNull)) = 0
+        AND DATEDIFF(DAY, tfPrev.A_DATE_FINISH, tf2.A_DATE_FINISH) > 0
+      GROUP BY tf2.A_OUID) t
+      ON tf2.A_OUID = t.A_OUID
+
+    /* Исключаем из периода размера назначения периоды приостановов */
+    UPDATE tf2
+    SET STARTDATE_PARCE_LEFT =
+                              CASE
+                                WHEN tfPrev.A_OUID IS NOT NULL THEN DATEADD(DAY, 1, tfPrev.A_DATEENDFINISH)
+                                ELSE tf2.STARTDATE
+                              END
+       ,LASTDATE_PARCE_LEFT = DATEADD(DAY, -1, tf2.A_DATE_FINISH)
+    FROM TEMP_FACT_PRIOSTANOV tf2
+    LEFT JOIN TEMP_FACT_PRIOSTANOV tfPrev
+      ON tf2.PREVIOS_ID = tfPrev.A_OUID
+
+    UPDATE tf2
+    SET STARTDATE_PARCE_RIGHT = DATEADD(DAY, 1, tf2.A_DATEENDFINISH)
+
+       ,LASTDATE_PARCE_RIGHT =
+                              CASE
+                                WHEN tfNext.A_OUID IS NOT NULL THEN DATEADD(DAY, -1, tfNext.A_DATE_FINISH)
+                                ELSE tf2.LASTDATE
+                              END
+    FROM TEMP_FACT_PRIOSTANOV tf2
+    LEFT JOIN TEMP_FACT_PRIOSTANOV tfNext
+      ON tf2.A_OUID = tfNext.PREVIOS_ID
+
+    INSERT INTO #TEMP_FACT_4 (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, STARTDATE_PARCE_LEFT, LASTDATE_PARCE_LEFT, PERS_GUID, A_AMOUNT, org, A_HASH, A_NON_MONETARY_FORM_AMOUNT, A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, A_CODE_PROVISION_FORM, A_PERIODICITY_CODE, A_STOPDATE)
+      SELECT
+        tf.MSZ
+       ,tf.LKMSZ
+       ,tf.MSPLKNPD
+       ,tf.STATUSPRIVELEGE
+       ,tf.ID_FACT
+       ,tf.PERSON_LG
+       ,tf.SERVDATE
+       ,tf.STARTDATE
+       ,tf.LASTDATE
+       ,tf.STARTDATE_PARCE_LEFT
+       ,tf.LASTDATE_PARCE_LEFT
+       ,tf.PERS_GUID
+       ,tf.A_AMOUNT
+       ,tf.org
+       ,tf.A_HASH
+        /* Для неденежных МСП */
+       ,tf.A_NON_MONETARY_FORM_AMOUNT
+       ,tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+       ,tf.A_CODE_PROVISION_FORM
+       ,tf.A_PERIODICITY_CODE
+       ,tf.A_STOPDATE
+      FROM TEMP_FACT_PRIOSTANOV tf
+      WHERE tf.STARTDATE_PARCE_LEFT IS NOT NULL
+      UNION
+      SELECT
+        tf.MSZ
+       ,tf.LKMSZ
+       ,tf.MSPLKNPD
+       ,tf.STATUSPRIVELEGE
+       ,tf.ID_FACT
+       ,tf.PERSON_LG
+       ,tf.SERVDATE
+       ,tf.STARTDATE
+       ,tf.LASTDATE
+       ,tf.STARTDATE_PARCE_RIGHT
+       ,tf.LASTDATE_PARCE_RIGHT
+       ,tf.PERS_GUID
+       ,tf.A_AMOUNT
+       ,tf.org
+       ,tf.A_HASH
+        /* Для неденежных МСП */
+       ,tf.A_NON_MONETARY_FORM_AMOUNT
+       ,tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+       ,tf.A_CODE_PROVISION_FORM
+       ,tf.A_PERIODICITY_CODE
+       ,tf.A_STOPDATE
+      FROM TEMP_FACT_PRIOSTANOV tf
+      WHERE tf.STARTDATE_PARCE_RIGHT IS NOT NULL
+
+    /* Удаляем из первоначальной таблицы те записи, по которым отработали приостанов и дополняем записями с учетом приостановов */
+    DELETE tf
+      FROM TEMP_FACT tf
+    WHERE EXISTS (SELECT
+          1
+        FROM #TEMP_FACT_4 tf3
+        WHERE tf.ID_FACT = tf3.ID_FACT
+        AND DATEDIFF(DAY, tf.STARTDATE, tf3.STARTDATE) = 0
+        AND DATEDIFF(DAY, ISNULL(tf.LASTDATE, @endDateNull), ISNULL(tf3.LASTDATE, @endDateNull)) = 0)
+
+    /* Удаляем возможные некорректные периоды и периоды больше месяца текущей даты */
+
+    DELETE FROM #TEMP_FACT_4
+    WHERE DATEDIFF(DAY, LASTDATE_PARCE_LEFT, STARTDATE_PARCE_LEFT) > 0
+    --OR DATEDIFF(MONTH, @getDate, STARTDATE_PARCE_LEFT) > 0
+
+    INSERT INTO TEMP_FACT (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, PERS_GUID, A_AMOUNT, org, A_HASH, A_NON_MONETARY_FORM_AMOUNT,
+    A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, A_CODE_PROVISION_FORM, A_PERIODICITY_CODE, A_STOPDATE)
+      SELECT
+        MSZ
+       ,LKMSZ
+       ,MSPLKNPD
+       ,STATUSPRIVELEGE
+       ,ID_FACT
+       ,PERSON_LG
+       ,SERVDATE
+       ,STARTDATE_PARCE_LEFT
+       ,LASTDATE_PARCE_LEFT
+       ,PERS_GUID
+       ,A_AMOUNT
+       ,org
+       ,A_HASH
+        /* Для неденежных МСП */
+       ,A_NON_MONETARY_FORM_AMOUNT
+       ,A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+       ,A_CODE_PROVISION_FORM
+       ,A_PERIODICITY_CODE
+       ,A_STOPDATE
+      FROM #TEMP_FACT_4
+
+  END
+  ELSE
+  IF (#A_TYPE_STOP# = ''20'') /*анализируем приостанов из Прекращение/возобновление МСП - 82478*/
+  BEGIN'
+
+    /* Определяем интервалы приостановов */
+
+
+    DECLARE @mspStopType VARCHAR(255)
+    SELECT
+      @mspStopType = dataType.LOGICNAME
+    FROM SXATTR attr
+    INNER JOIN SXDATATYPE dataType
+      ON attr.OUIDDATATYPE = dataType.OUID
+    WHERE attr.[NAME] = 'mspStop'
+      AND attr.OUIDSXCLASS = (SELECT s.OUID FROM SXCLASS s WHERE s.[NAME] = 'esrnServServ')
+    
+    IF (@mspStopType = 'ObjectsList')
+    BEGIN
+      SET @SQL_RAYON = @SQL_RAYON + '
+      SET @endDateNull = CONVERT(DATETIME, ''2100-01-01'', 120)
+      INSERT INTO TEMP_FACT_PRIOSTANOV (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, PERS_GUID, A_AMOUNT, org, A_HASH, A_NON_MONETARY_FORM_AMOUNT,
+      A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, A_CODE_PROVISION_FORM, A_PERIODICITY_CODE, A_STOPDATE, PRIOSTANOV_ID, A_DATE_FINISH, A_DATEENDFINISH, STARTDATE_PARCE_LEFT, LASTDATE_PARCE_LEFT,
+      STARTDATE_PARCE_RIGHT, LASTDATE_PARCE_RIGHT, PREVIOS_ID)
+        SELECT TOP 1 WITH TIES
+          tf.MSZ
+         ,tf.LKMSZ
+         ,tf.MSPLKNPD
+         ,tf.STATUSPRIVELEGE
+         ,tf.ID_FACT
+         ,tf.PERSON_LG
+         ,tf.SERVDATE
+         ,tf.STARTDATE
+         ,tf.LASTDATE
+         ,tf.PERS_GUID
+         ,tf.A_AMOUNT
+         ,tf.org
+         ,tf.A_HASH
+         ,tf.A_NON_MONETARY_FORM_AMOUNT
+         ,tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+         ,tf.A_CODE_PROVISION_FORM
+         ,tf.A_PERIODICITY_CODE
+         ,tf.A_STOPDATE
+         ,priostanov.OUID
+         ,priostanov.A_DATE_FINISH
+         ,priostanov.A_DATEENDFINISH
+         ,NULL STARTDATE_PARCE_LEFT
+         ,NULL LASTDATE_PARCE_LEFT
+         ,NULL STARTDATE_PARCE_RIGHT
+         ,NULL LASTDATE_PARCE_RIGHT
+         ,NULL PREVIOS_ID
+        FROM TEMP_FACT tf
+        INNER JOIN ESRN_SERV_SERV ess
+          ON tf.ID_FACT = ess.GUID
+        /* Берем приостановления со статусом "Приостановление временное" */
+        INNER JOIN SPR_STOPSERV_ESRNSERVSERV linkServStop
+          ON ess.OUID = linkServStop.FROMID
+        INNER JOIN WM_STOP_SERVSERV priostanov
+          ON linkServStop.TOID = priostanov.OUID
+          AND priostanov.A_TYPE = ''10''
+          AND DATEDIFF(DAY, tf.STARTDATE, ISNULL(priostanov.A_DATEENDFINISH, @endDateNull)) >= 0
+          AND DATEDIFF(DAY, priostanov.A_DATE_FINISH, ISNULL(tf.LASTDATE, @endDateNull)) >= 0
+          AND ISNULL(priostanov.A_STATUS, 10) = 10
+        ORDER BY ROW_NUMBER() OVER (PARTITION BY tf.MSZ
+        , tf.LKMSZ
+        , tf.MSPLKNPD
+        , tf.STATUSPRIVELEGE
+        , tf.ID_FACT
+        , tf.PERSON_LG
+        , tf.SERVDATE
+        , tf.STARTDATE
+        , tf.LASTDATE
+        , tf.PERS_GUID
+        , tf.A_AMOUNT
+        , tf.org
+        , tf.A_HASH
+        , tf.A_NON_MONETARY_FORM_AMOUNT
+        , tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+        , tf.A_CODE_PROVISION_FORM
+        , tf.A_PERIODICITY_CODE, priostanov.A_DATE_FINISH
+        , priostanov.A_DATEENDFINISH
+        ORDER BY priostanov.A_CREATEDATE DESC)'
+    END
+    ELSE
+    BEGIN
+      SET @SQL_RAYON = @SQL_RAYON + '
+      SET @endDateNull = CONVERT(DATETIME, ''2100-01-01'', 120)
+      INSERT INTO TEMP_FACT_PRIOSTANOV (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, PERS_GUID, A_AMOUNT, org, A_HASH, A_NON_MONETARY_FORM_AMOUNT,
+      A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, A_CODE_PROVISION_FORM, A_PERIODICITY_CODE, A_STOPDATE, PRIOSTANOV_ID, A_DATE_FINISH, A_DATEENDFINISH, STARTDATE_PARCE_LEFT, LASTDATE_PARCE_LEFT,
+      STARTDATE_PARCE_RIGHT, LASTDATE_PARCE_RIGHT, PREVIOS_ID)
+        SELECT TOP 1 WITH TIES
+          tf.MSZ
+         ,tf.LKMSZ
+         ,tf.MSPLKNPD
+         ,tf.STATUSPRIVELEGE
+         ,tf.ID_FACT
+         ,tf.PERSON_LG
+         ,tf.SERVDATE
+         ,tf.STARTDATE
+         ,tf.LASTDATE
+         ,tf.PERS_GUID
+         ,tf.A_AMOUNT
+         ,tf.org
+         ,tf.A_HASH
+         ,tf.A_NON_MONETARY_FORM_AMOUNT
+         ,tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+         ,tf.A_CODE_PROVISION_FORM
+         ,tf.A_PERIODICITY_CODE
+         ,tf.A_STOPDATE
+         ,priostanov.OUID
+         ,priostanov.A_DATE_FINISH
+         ,priostanov.A_DATEENDFINISH
+         ,NULL STARTDATE_PARCE_LEFT
+         ,NULL LASTDATE_PARCE_LEFT
+         ,NULL STARTDATE_PARCE_RIGHT
+         ,NULL LASTDATE_PARCE_RIGHT
+         ,NULL PREVIOS_ID
+        FROM TEMP_FACT tf
+        INNER JOIN ESRN_SERV_SERV ess
+          ON tf.ID_FACT = ess.GUID
+        /* Берем приостановления со статусом "Приостановление временное" */
+        INNER JOIN WM_STOP_SERVSERV priostanov
+          ON ess.OUID = priostanov.A_SERV
+          AND priostanov.A_TYPE = ''10''
+          AND DATEDIFF(DAY, tf.STARTDATE, ISNULL(priostanov.A_DATEENDFINISH, @endDateNull)) >= 0
+          AND DATEDIFF(DAY, priostanov.A_DATE_FINISH, ISNULL(tf.LASTDATE, @endDateNull)) >= 0
+          AND ISNULL(priostanov.A_STATUS, 10) = 10
+        ORDER BY ROW_NUMBER() OVER (PARTITION BY tf.MSZ
+        , tf.LKMSZ
+        , tf.MSPLKNPD
+        , tf.STATUSPRIVELEGE
+        , tf.ID_FACT
+        , tf.PERSON_LG
+        , tf.SERVDATE
+        , tf.STARTDATE
+        , tf.LASTDATE
+        , tf.PERS_GUID
+        , tf.A_AMOUNT
+        , tf.org
+        , tf.A_HASH
+        , tf.A_NON_MONETARY_FORM_AMOUNT
+        , tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+        , tf.A_CODE_PROVISION_FORM
+        , tf.A_PERIODICITY_CODE, priostanov.A_DATE_FINISH
+        , priostanov.A_DATEENDFINISH
+        ORDER BY priostanov.A_CREATEDATE DESC)
+        '
+    END
+    /*
+      /* Дату окончания приостановления обновляем датой ближайшего возобновления */
+      UPDATE tf2
+      SET A_DATEENDFINISH = DATEADD(DAY, -1, t.A_DATE_FINISH)
+      FROM TEMP_FACT_PRIOSTANOV tf2
+      INNER JOIN (SELECT
+          tf2.A_OUID
+         ,MIN(vozob.A_DATE_FINISH) A_DATE_FINISH
+        FROM TEMP_FACT_PRIOSTANOV tf2
+        INNER JOIN ESRN_SERV_SERV ess
+          ON tf2.ID_FACT = ess.GUID
+        /* Возобновление */
+        LEFT JOIN WM_STOP_SERVSERV_HIST vozob
+          ON ess.OUID = vozob.A_SERV
+          AND vozob.A_TYPE = ''20''
+          AND DATEDIFF(DAY, tf2.STARTDATE, ISNULL(vozob.A_DATEENDFINISH, @endDateNull)) >= 0
+          AND DATEDIFF(DAY, vozob.A_DATE_FINISH, ISNULL(tf2.LASTDATE, @endDateNull)) >= 0
+          AND ISNULL(vozob.A_STATUS, 10) = 10
+          AND DATEDIFF(DAY, tf2.A_DATE_FINISH, vozob.A_DATE_FINISH) >= 0
+          AND vozob.OUID > tf2.PRIOSTANOV_ID
+        WHERE tf2.A_DATEENDFINISH IS NULL
+        GROUP BY tf2.A_OUID) t
+        ON tf2.A_OUID = t.A_OUID
+    */
+SET @SQL_RAYON = @SQL_RAYON + '
+    DELETE FROM TEMP_FACT_PRIOSTANOV
+    WHERE DATEDIFF(DAY, ISNULL(A_DATEENDFINISH, @endDateNull), A_DATE_FINISH) >= 0
+
+    UPDATE tf2
+    SET PREVIOS_ID = t.PREVIOS_ID
+    FROM TEMP_FACT_PRIOSTANOV tf2
+    INNER JOIN (SELECT
+        tf2.A_OUID
+       ,MAX(tfPrev.A_OUID) PREVIOS_ID
+      FROM TEMP_FACT_PRIOSTANOV tf2
+      INNER JOIN TEMP_FACT_PRIOSTANOV tfPrev
+        ON tf2.ID_FACT = tfPrev.ID_FACT
+        AND DATEDIFF(DAY, tf2.STARTDATE, tfPrev.STARTDATE) = 0
+        AND DATEDIFF(DAY, ISNULL(tf2.LASTDATE, @endDateNull), ISNULL(tfPrev.LASTDATE, @endDateNull)) = 0
+        AND DATEDIFF(DAY, tfPrev.A_DATE_FINISH, tf2.A_DATE_FINISH) > 0
+      GROUP BY tf2.A_OUID) t
+      ON tf2.A_OUID = t.A_OUID
+
+    /* Исключаем из периода размера назначения периоды приостановов */
+    UPDATE tf2
+    SET STARTDATE_PARCE_LEFT =
+                              CASE
+                                WHEN tfPrev.A_OUID IS NOT NULL THEN DATEADD(DAY, 1, tfPrev.A_DATEENDFINISH)
+                                ELSE tf2.STARTDATE
+                              END
+       ,LASTDATE_PARCE_LEFT = DATEADD(DAY, -1, tf2.A_DATE_FINISH)
+    FROM TEMP_FACT_PRIOSTANOV tf2
+    LEFT JOIN TEMP_FACT_PRIOSTANOV tfPrev
+      ON tf2.PREVIOS_ID = tfPrev.A_OUID
+
+    UPDATE tf2
+    SET STARTDATE_PARCE_RIGHT = DATEADD(DAY, 1, tf2.A_DATEENDFINISH)
+
+       ,LASTDATE_PARCE_RIGHT =
+                              CASE
+                                WHEN tfNext.A_OUID IS NOT NULL THEN DATEADD(DAY, -1, tfNext.A_DATE_FINISH)
+                                ELSE tf2.LASTDATE
+                              END
+    FROM TEMP_FACT_PRIOSTANOV tf2
+    LEFT JOIN TEMP_FACT_PRIOSTANOV tfNext
+      ON tf2.A_OUID = tfNext.PREVIOS_ID
+
+    INSERT INTO #TEMP_FACT_4 (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, STARTDATE_PARCE_LEFT, LASTDATE_PARCE_LEFT, PERS_GUID, A_AMOUNT, org, A_HASH, A_NON_MONETARY_FORM_AMOUNT, A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, A_CODE_PROVISION_FORM, A_PERIODICITY_CODE, A_STOPDATE)
+      SELECT
+        tf.MSZ
+       ,tf.LKMSZ
+       ,tf.MSPLKNPD
+       ,tf.STATUSPRIVELEGE
+       ,tf.ID_FACT
+       ,tf.PERSON_LG
+       ,tf.SERVDATE
+       ,tf.STARTDATE
+       ,tf.LASTDATE
+       ,tf.STARTDATE_PARCE_LEFT
+       ,tf.LASTDATE_PARCE_LEFT
+       ,tf.PERS_GUID
+       ,tf.A_AMOUNT
+       ,tf.org
+       ,tf.A_HASH
+        /* Для неденежных МСП */
+       ,tf.A_NON_MONETARY_FORM_AMOUNT
+       ,tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+       ,tf.A_CODE_PROVISION_FORM
+       ,tf.A_PERIODICITY_CODE
+       ,tf.A_STOPDATE
+
+      FROM TEMP_FACT_PRIOSTANOV tf
+      WHERE tf.STARTDATE_PARCE_LEFT IS NOT NULL
+      UNION
+      SELECT
+        tf.MSZ
+       ,tf.LKMSZ
+       ,tf.MSPLKNPD
+       ,tf.STATUSPRIVELEGE
+       ,tf.ID_FACT
+       ,tf.PERSON_LG
+       ,tf.SERVDATE
+       ,tf.STARTDATE
+       ,tf.LASTDATE
+       ,tf.STARTDATE_PARCE_RIGHT
+       ,tf.LASTDATE_PARCE_RIGHT
+       ,tf.PERS_GUID
+       ,tf.A_AMOUNT
+       ,tf.org
+       ,tf.A_HASH
+        /* Для неденежных МСП */
+       ,tf.A_NON_MONETARY_FORM_AMOUNT
+       ,tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+       ,tf.A_CODE_PROVISION_FORM
+       ,tf.A_PERIODICITY_CODE
+       ,tf.A_STOPDATE
+      FROM TEMP_FACT_PRIOSTANOV tf
+      WHERE tf.STARTDATE_PARCE_RIGHT IS NOT NULL
+
+    /* Удаляем из первоначальной таблицы те записи, по которым отработали приостанов и дополняем записями с учетом приостановов */
+    DELETE tf
+      FROM TEMP_FACT tf
+    WHERE EXISTS (SELECT
+          1
+        FROM #TEMP_FACT_4 tf3
+        WHERE tf.ID_FACT = tf3.ID_FACT
+        AND DATEDIFF(DAY, tf.STARTDATE, tf3.STARTDATE) = 0
+        AND DATEDIFF(DAY, ISNULL(tf.LASTDATE, @endDateNull), ISNULL(tf3.LASTDATE, @endDateNull)) = 0)
+
+    /* Удаляем возможные некорректные периоды и периоды больше месяца текущей даты */
+
+    DELETE FROM #TEMP_FACT_4
+    WHERE DATEDIFF(DAY, LASTDATE_PARCE_LEFT, STARTDATE_PARCE_LEFT) > 0
+    --OR DATEDIFF(MONTH, @getDate, STARTDATE_PARCE_LEFT) > 0
+
+    INSERT INTO TEMP_FACT (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, PERS_GUID, A_AMOUNT, org, A_HASH, A_NON_MONETARY_FORM_AMOUNT,
+    A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, A_CODE_PROVISION_FORM, A_PERIODICITY_CODE, A_STOPDATE)
+      SELECT
+        MSZ
+       ,LKMSZ
+       ,MSPLKNPD
+       ,STATUSPRIVELEGE
+       ,ID_FACT
+       ,PERSON_LG
+       ,SERVDATE
+       ,STARTDATE_PARCE_LEFT
+       ,LASTDATE_PARCE_LEFT
+       ,PERS_GUID
+       ,A_AMOUNT
+       ,org
+       ,A_HASH
+        /* Для неденежных МСП */
+       ,A_NON_MONETARY_FORM_AMOUNT
+       ,A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+       ,A_CODE_PROVISION_FORM
+       ,A_PERIODICITY_CODE
+       ,A_STOPDATE
+      FROM #TEMP_FACT_4
+  END
+END
+  
+/* По ежемесячным МСП делим период факта кратно месяцу 
+*/
+IF OBJECT_ID(''EGISSO_FACT_MONTH_RAYON'', ''U'') IS NOT NULL
+  DROP TABLE EGISSO_FACT_MONTH_RAYON
+
+CREATE TABLE EGISSO_FACT_MONTH_RAYON (
+  A_OUID INT IDENTITY (1, 1) NOT NULL PRIMARY KEY CLUSTERED
+ ,A_GUID_SERV VARCHAR(255) NULL
+ ,d1 DATETIME NULL
+ ,d2 DATETIME NULL
+  /* Атрибут "Сумма", если "Денежная форма" */
+ ,A_MONETARY_FORM_AMOUNT FLOAT NULL
+  /* Размер (Количество) */
+ ,A_NON_MONETARY_FORM_AMOUNT FLOAT NULL
+  /* Атрибут "Эквивалент в рублях", если "Натуральная форма" или "Льгота" */
+ ,A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT FLOAT NULL
+ ,FACT_GUID VARCHAR(255) NULL
+ ,MSZ INT NULL
+ ,LKMSZ INT NULL
+ ,STARTDATE DATETIME NULL
+ ,LASTDATE DATETIME NULL
+ ,SERVPAYAMOUNT_LASTDATE DATETIME NULL
+)
+
+
+DECLARE @endDateLastDay DATETIME
+SET @endDateLastDay = DATEADD(MONTH, 1, @end_date) - DAY(DATEADD(MONTH, 1, @end_date))
+
+IF OBJECT_ID(''spt_values_number_egisso'', ''U'') IS NOT NULL
+  DROP TABLE spt_values_number_egisso
+
+CREATE TABLE spt_values_number_egisso (
+  A_OUID INT IDENTITY (1, 1) NOT NULL PRIMARY KEY CLUSTERED
+ ,number INT NOT NULL
+)
+
+INSERT INTO spt_values_number_egisso (number)
+  SELECT
+    number
+  FROM master..spt_values
+  WHERE type = ''P''
+
+UPDATE TEMP_FACT
+SET SERVPAYAMOUNT_LASTDATE = LASTDATE
+
+UPDATE TEMP_FACT
+SET LASTDATE = DATEADD(MONTH, 1, x.A_DATE_FINISH)
+FROM (SELECT TOP 1 WITH TIES
+    tf.ID_FACT
+   ,tf.STARTDATE
+   ,store.A_DATE_FINISH
+  FROM TEMP_FACT tf
+  INNER JOIN EGISSO_NEW_STORE store
+    ON tf.ID_FACT = store.A_SERV_GUID
+
+  WHERE tf.LASTDATE IS NULL
+  AND tf.A_PERIODICITY_CODE = 1
+  AND store.A_STATUS = 10
+
+  ORDER BY ROW_NUMBER() OVER (PARTITION BY store.A_SERV_GUID
+  ORDER BY store.A_DATE_START DESC)) x
+INNER JOIN TEMP_FACT tf
+  ON x.ID_FACT = tf.ID_FACT
+WHERE DATEDIFF(DAY, tf.STARTDATE, x.STARTDATE) = 0
+
+UPDATE TEMP_FACT
+SET LASTDATE = DATEADD(MONTH, 1, STARTDATE) - DAY(DATEADD(MONTH, 1, STARTDATE))
+WHERE A_PERIODICITY_CODE = 1
+AND LASTDATE IS NULL
+/*OR DATEDIFF(DAY, @endDateLastDay, LASTDATE) > 0)*/
+
+
+INSERT INTO EGISSO_FACT_MONTH_RAYON (A_GUID_SERV, d1, d2, A_MONETARY_FORM_AMOUNT, A_NON_MONETARY_FORM_AMOUNT, A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, MSZ, LKMSZ, STARTDATE, LASTDATE, SERVPAYAMOUNT_LASTDATE)
+  SELECT
+    tf.ID_FACT
+   ,tf.STARTDATE d1
+   ,tf.LASTDATE d2
+   ,tf.A_AMOUNT
+   ,tf.A_NON_MONETARY_FORM_AMOUNT
+   ,tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+   ,tf.MSZ
+   ,tf.LKMSZ
+   ,tf.STARTDATE
+   ,tf.LASTDATE
+   ,tf.SERVPAYAMOUNT_LASTDATE
+  FROM TEMP_FACT tf
+  WHERE tf.A_PERIODICITY_CODE = 1
+  AND DATEDIFF(MONTH, tf.STARTDATE, tf.LASTDATE) = 0
+
+INSERT INTO EGISSO_FACT_MONTH_RAYON (A_GUID_SERV, d1, d2, A_MONETARY_FORM_AMOUNT, A_NON_MONETARY_FORM_AMOUNT, A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, MSZ, LKMSZ, STARTDATE, LASTDATE, SERVPAYAMOUNT_LASTDATE)
+  SELECT
+    tf.ID_FACT
+   ,DATEADD(mm, DATEDIFF(mm, @startDateNull, tf.STARTDATE) + number, @startDateNull) d1
+   ,DATEADD(mm, DATEDIFF(mm, @startDateNull, tf.STARTDATE) + number + 1, @startDateNull) - 1 d2
+   ,tf.A_AMOUNT
+   ,tf.A_NON_MONETARY_FORM_AMOUNT
+   ,tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+   ,tf.MSZ
+   ,tf.LKMSZ
+   ,tf.STARTDATE
+   ,tf.LASTDATE
+   ,tf.SERVPAYAMOUNT_LASTDATE
+  FROM TEMP_FACT tf
+  CROSS JOIN spt_values_number_egisso
+  WHERE tf.A_PERIODICITY_CODE = 1
+  AND DATEDIFF(MONTH, tf.STARTDATE, tf.LASTDATE) > 0
+  AND number <= DATEDIFF(mm, tf.STARTDATE, tf.LASTDATE)
+
+UPDATE EGISSO_FACT_MONTH_RAYON
+SET d1 = STARTDATE
+WHERE DATEDIFF(DAY, d1, STARTDATE) > 0
+
+UPDATE EGISSO_FACT_MONTH_RAYON
+SET d2 = LASTDATE
+WHERE DATEDIFF(DAY, LASTDATE, d2) > 0
+
+/* Удаление фактов с периодами менее даты начала сбора (@start_date) */
+DELETE FROM EGISSO_FACT_MONTH_RAYON
+WHERE DATEDIFF(MONTH, d2, @start_date) > 0
+
+
+IF OBJECT_ID(N''TEMP_FACT4'', ''U'') IS NOT NULL
+  DROP TABLE TEMP_FACT4
+
+CREATE TABLE TEMP_FACT4 (
+  MSZ INT NULL
+ ,LKMSZ INT NULL
+ ,MSPLKNPD VARCHAR(50) NULL
+ ,STATUSPRIVELEGE INT NULL
+ ,ID_FACT VARCHAR(50) NULL
+ ,PERSON_LG VARCHAR(50) NULL
+ ,SERVDATE DATETIME NULL
+ ,STARTDATE DATETIME NULL
+ ,LASTDATE DATETIME NULL
+ ,SERVPAYAMOUNT_LASTDATE DATETIME NULL
+ ,PERS_GUID VARCHAR(5000) NULL
+ ,A_AMOUNT FLOAT NULL
+ ,org VARCHAR(50) NULL
+ ,A_HASH INT NULL
+  /* Поля для неденежных МСП */
+ ,A_NON_MONETARY_FORM_AMOUNT FLOAT NULL /* Размер (Количество) */
+ ,A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT FLOAT NULL /* Эквивалент в рублях */
+ ,A_CODE_PROVISION_FORM INT NULL
+ ,A_PERIODICITY_CODE INT NULL
+ ,A_STOPDATE DATETIME NULL
+ ,IS_TERMINATION_REL_MSP BIT NULL
+)
+
+CREATE INDEX IDX_TEMP_FACT4_ID_FACT_A_PERIODICITY_CODE
+ON TEMP_FACT4 (ID_FACT, A_PERIODICITY_CODE)
+ON [PRIMARY]
+
+CREATE INDEX IDX_TEMP_FACT4_A_PERIODICITY_CODE
+ON TEMP_FACT4 (A_PERIODICITY_CODE)
+INCLUDE (ID_FACT)
+
+INSERT INTO TEMP_FACT4 (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, SERVPAYAMOUNT_LASTDATE, PERS_GUID, A_AMOUNT, org, A_HASH, A_NON_MONETARY_FORM_AMOUNT, A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, A_CODE_PROVISION_FORM, A_PERIODICITY_CODE, A_STOPDATE)
+  SELECT DISTINCT
+    ISNULL(efm.MSZ, tf.MSZ) MSZ
+   ,ISNULL(efm.LKMSZ, tf.LKMSZ) LKMSZ
+   ,tf.MSPLKNPD
+   ,tf.STATUSPRIVELEGE
+   ,tf.ID_FACT
+   ,tf.PERSON_LG
+   ,tf.SERVDATE
+   ,CASE
+      WHEN efm.A_GUID_SERV IS NOT NULL THEN efm.d1
+      ELSE tf.STARTDATE
+    END STARTDATE
+   ,CASE
+      WHEN efm.A_GUID_SERV IS NOT NULL THEN efm.d2
+      ELSE tf.LASTDATE
+    END LASTDATE
+   ,CASE
+      WHEN efm.A_GUID_SERV IS NOT NULL THEN efm.SERVPAYAMOUNT_LASTDATE
+      ELSE tf.SERVPAYAMOUNT_LASTDATE
+    END
+   ,tf.PERS_GUID
+   ,CASE
+      WHEN efm.A_GUID_SERV IS NOT NULL THEN efm.A_MONETARY_FORM_AMOUNT
+      ELSE tf.A_AMOUNT
+    END A_AMOUNT
+   ,tf.org
+   ,NULL A_HASH
+   ,CASE
+      WHEN efm.A_GUID_SERV IS NOT NULL THEN efm.A_NON_MONETARY_FORM_AMOUNT
+      ELSE tf.A_NON_MONETARY_FORM_AMOUNT
+    END A_NON_MONETARY_FORM_AMOUNT
+   ,CASE
+      WHEN efm.A_GUID_SERV IS NOT NULL THEN efm.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+      ELSE tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+    END A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+   ,tf.A_CODE_PROVISION_FORM
+   ,tf.A_PERIODICITY_CODE
+   ,tf.A_STOPDATE
+  FROM TEMP_FACT tf
+  LEFT JOIN EGISSO_FACT_MONTH_RAYON efm
+    ON tf.ID_FACT = efm.A_GUID_SERV'
+
+
+--DECLARE @mspStopType VARCHAR(255)
+SELECT
+  @mspStopType = dataType.LOGICNAME
+FROM SXATTR attr
+INNER JOIN SXDATATYPE dataType
+  ON attr.OUIDDATATYPE = dataType.OUID
+WHERE attr.[NAME] = 'mspStop'
+  AND attr.OUIDSXCLASS = (SELECT s.OUID FROM SXCLASS s WHERE s.[NAME] = 'esrnServServ')
+
+IF (@mspStopType = 'ObjectsList')
+BEGIN
+  SET @SQL_RAYON = @SQL_RAYON + '
+  UPDATE TEMP_FACT4
+  SET A_STOPDATE = ess.A_STOPDATE
+     ,IS_TERMINATION_REL_MSP =
+                              CASE
+                                WHEN stopServ.OUID IS NULL OR
+                                  sr.A_NAME != ''Прекращение в связи с назначением связанной МСП'' THEN 0
+                                ELSE 1
+                              END
+  FROM TEMP_FACT4
+  INNER JOIN ESRN_SERV_SERV ess
+    ON ID_FACT = ess.GUID
+  LEFT JOIN SPR_STOPSERV_ESRNSERVSERV linkEsrnStop
+  INNER JOIN WM_STOP_SERVSERV stopServ
+    ON linkEsrnStop.TOID = stopServ.OUID
+    AND stopServ.A_TYPE = ''15''
+    AND ISNULL(stopServ.A_STATUS, 10) = 10
+  INNER JOIN SPR_REFUSE sr
+    ON stopServ.A_REASON = sr.OUID
+    ON ess.OUID = linkEsrnStop.FROMID
+  WHERE DATEDIFF(DAY, STARTDATE, ess.A_STOPDATE) > 0
+  AND DATEDIFF(DAY, ess.A_STOPDATE, ISNULL(LASTDATE, CONVERT(DATETIME, ''3000-01-01'', 120))) >= 0'
+END
+ELSE
+BEGIN
+  SET @SQL_RAYON = @SQL_RAYON + '
+  UPDATE TEMP_FACT4
+  SET A_STOPDATE = ess.A_STOPDATE
+     ,IS_TERMINATION_REL_MSP =
+                              CASE
+                                WHEN stopServ.OUID IS NULL OR
+                                  sr.A_NAME != ''Прекращение в связи с назначением связанной МСП'' THEN 0
+                                ELSE 1
+                              END
+  FROM TEMP_FACT4
+  INNER JOIN ESRN_SERV_SERV ess
+    ON ID_FACT = ess.GUID
+  LEFT JOIN WM_STOP_SERVSERV stopServ
+  INNER JOIN SPR_REFUSE sr
+    ON stopServ.A_REASON = sr.OUID
+
+    ON ess.OUID = stopServ.A_SERV
+    AND stopServ.A_TYPE = ''15''
+    AND ISNULL(stopServ.A_STATUS, 10) = 10
+  WHERE DATEDIFF(DAY, STARTDATE, ess.A_STOPDATE) > 0
+  AND DATEDIFF(DAY, ess.A_STOPDATE, ISNULL(LASTDATE, CONVERT(DATETIME, ''3000-01-01'', 120))) >= 0'
+END
+
+SET @SQL_RAYON = @SQL_RAYON + '
+IF OBJECT_ID(''EGISSO_NEW_TEMP_STORE_BIND'', ''U'') IS NOT NULL
+  DROP TABLE EGISSO_NEW_TEMP_STORE_BIND
+
+CREATE TABLE EGISSO_NEW_TEMP_STORE_BIND (
+  ID_FACT VARCHAR(255) NULL
+ ,d1 DATETIME NULL
+ ,d2 DATETIME NULL
+ ,A_AMOUNT FLOAT NULL
+ ,A_EQUIVALENT_AMOUNT FLOAT NULL
+ ,A_DATE_START DATETIME NULL
+ ,A_DATE_FINISH DATETIME NULL
+ ,A_MSZ_ID INT NULL
+ ,A_LKMSZ_ID INT NULL
+)
+
+INSERT INTO EGISSO_NEW_TEMP_STORE_BIND (ID_FACT, d1, d2, A_AMOUNT, A_EQUIVALENT_AMOUNT, A_DATE_START, A_DATE_FINISH, A_MSZ_ID, A_LKMSZ_ID)
+  SELECT DISTINCT
+    tf.ID_FACT
+   ,DATEADD(mm, DATEDIFF(mm, @startDateNull, store.A_DATE_START) + number, @startDateNull) d1
+   ,DATEADD(mm, DATEDIFF(mm, @startDateNull, store.A_DATE_START) + number + 1, @startDateNull) - 1 d2
+   ,store.A_AMOUNT
+   ,store.A_EQUIVALENT_AMOUNT
+   ,store.A_DATE_START
+   ,ISNULL(store.A_DATE_FINISH, DATEADD(MONTH, 1, store.A_DATE_START) - DAY(DATEADD(MONTH, 1, store.A_DATE_START))) A_DATE_FINISH
+   ,ISNULL(store.A_MSZ_ID, 0)
+   ,ISNULL(store.A_LKMSZ_ID, 0)
+  FROM TEMP_FACT4 tf
+  INNER JOIN EGISSO_NEW_STORE store
+    ON tf.ID_FACT = store.A_SERV_GUID
+  CROSS JOIN spt_values_number_egisso
+  WHERE tf.A_PERIODICITY_CODE = 1
+  AND DATEDIFF(MONTH, store.A_DATE_START, ISNULL(store.A_DATE_FINISH, DATEADD(MONTH, 1, store.A_DATE_START))) > 0
+  AND number <= DATEDIFF(mm, store.A_DATE_START, ISNULL(store.A_DATE_FINISH, store.A_DATE_START))
+  AND ISNULL(store.A_STATUS, 10) = 10
+
+UPDATE EGISSO_NEW_TEMP_STORE_BIND
+SET d1 = A_DATE_START
+WHERE DATEDIFF(DAY, d1, A_DATE_START) > 0
+
+UPDATE EGISSO_NEW_TEMP_STORE_BIND
+SET d2 = A_DATE_FINISH
+WHERE DATEDIFF(DAY, A_DATE_FINISH, d2) > 0
+
+
+/* Удаляем уже существующие в массиве факты, при этом передаем на центр факты с пометкой о прекращении, для того, чтобы удалить факты больше даты прекращения (если они ранее были загружены) */
+DELETE tf
+  FROM TEMP_FACT4 tf
+WHERE tf.A_CODE_PROVISION_FORM = 1
+  AND tf.A_PERIODICITY_CODE = 1
+  AND tf.A_STOPDATE IS NULL
+  AND EXISTS (SELECT
+      1
+    FROM EGISSO_NEW_TEMP_STORE_BIND store
+    WHERE tf.ID_FACT = store.ID_FACT
+    AND DATEDIFF(DAY, tf.STARTDATE, store.d1) = 0
+    AND DATEDIFF(DAY, ISNULL(tf.LASTDATE, @endDateNull), ISNULL(store.d2, @endDateNull)) = 0
+    AND tf.A_AMOUNT = ISNULL(store.A_AMOUNT, 0)
+    AND tf.MSZ = store.A_MSZ_ID
+    AND tf.LKMSZ = store.A_LKMSZ_ID)
+
+DELETE tf
+  FROM TEMP_FACT4 tf
+WHERE tf.A_CODE_PROVISION_FORM = 1
+  AND tf.A_PERIODICITY_CODE = 1
+  AND tf.A_STOPDATE IS NULL
+  AND EXISTS (SELECT
+      1
+    FROM EGISSO_NEW_TEMP_STORE_BIND store
+    WHERE tf.ID_FACT = store.ID_FACT
+    AND DATEDIFF(DAY, tf.STARTDATE, store.d1) = 0
+    AND DATEDIFF(DAY, ISNULL(tf.SERVPAYAMOUNT_LASTDATE, @endDateNull), ISNULL(store.d2, @endDateNull)) = 0
+    AND tf.A_AMOUNT = ISNULL(store.A_AMOUNT, 0)
+    AND tf.MSZ = store.A_MSZ_ID
+    AND tf.LKMSZ = store.A_LKMSZ_ID)
+
+DELETE tf
+  FROM TEMP_FACT4 tf
+WHERE tf.A_CODE_PROVISION_FORM IN (2, 3)
+  AND tf.A_PERIODICITY_CODE = 1
+  AND tf.A_STOPDATE IS NULL
+  AND EXISTS (SELECT
+      1
+    FROM EGISSO_NEW_TEMP_STORE_BIND store
+    WHERE tf.ID_FACT = store.ID_FACT
+    AND DATEDIFF(DAY, tf.STARTDATE, store.d1) = 0
+    AND DATEDIFF(DAY, ISNULL(tf.LASTDATE, @endDateNull), ISNULL(store.d2, @endDateNull)) = 0
+    AND tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT = ISNULL(store.A_EQUIVALENT_AMOUNT, 0))
+
+DELETE tf
+  FROM TEMP_FACT4 tf
+WHERE tf.A_CODE_PROVISION_FORM IN (2, 3)
+  AND tf.A_PERIODICITY_CODE = 1
+  AND tf.A_STOPDATE IS NULL
+  AND EXISTS (SELECT
+      1
+    FROM EGISSO_NEW_TEMP_STORE_BIND store
+    WHERE tf.ID_FACT = store.ID_FACT
+    AND DATEDIFF(DAY, tf.STARTDATE, store.d1) = 0
+    AND DATEDIFF(DAY, ISNULL(tf.SERVPAYAMOUNT_LASTDATE, @endDateNull), ISNULL(store.d2, @endDateNull)) = 0
+    AND tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT = ISNULL(store.A_EQUIVALENT_AMOUNT, 0))
+
+DELETE tf
+  FROM TEMP_FACT4 tf
+WHERE tf.A_CODE_PROVISION_FORM = 1
+--  AND tf.A_PERIODICITY_CODE != 1
+  AND tf.A_STOPDATE IS NULL
+  AND EXISTS (SELECT
+      1
+    FROM EGISSO_NEW_STORE store
+    WHERE tf.ID_FACT = store.A_SERV_GUID
+    AND DATEDIFF(DAY, tf.STARTDATE, store.A_DATE_START) = 0
+    AND DATEDIFF(DAY, ISNULL(tf.LASTDATE, @endDateNull), ISNULL(store.A_DATE_FINISH, @endDateNull)) = 0
+    AND tf.A_AMOUNT = ISNULL(store.A_AMOUNT, 0)
+    AND ISNULL(store.A_STATUS, 10) = 10
+    AND tf.MSZ = store.A_MSZ_ID
+    AND tf.LKMSZ = store.A_LKMSZ_ID)
+
+DELETE tf
+  FROM TEMP_FACT4 tf
+WHERE tf.A_CODE_PROVISION_FORM IN (2, 3)
+--  AND tf.A_PERIODICITY_CODE != 1
+  AND tf.A_STOPDATE IS NULL
+  AND EXISTS (SELECT
+      1
+    FROM EGISSO_NEW_STORE store
+    WHERE tf.ID_FACT = store.A_SERV_GUID
+    AND DATEDIFF(DAY, tf.STARTDATE, store.A_DATE_START) = 0
+    AND DATEDIFF(DAY, ISNULL(tf.LASTDATE, @endDateNull), ISNULL(store.A_DATE_FINISH, @endDateNull)) = 0
+    AND tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT = ISNULL(store.A_EQUIVALENT_AMOUNT, 0)
+    AND ISNULL(store.A_STATUS, 10) = 10)
+
+
+/* Объединение интервалов */
+IF OBJECT_ID(N''TEMP_FACT5'', ''U'') IS NOT NULL
+  DROP TABLE TEMP_FACT5
+
+CREATE TABLE TEMP_FACT5 (
+  MSZ INT NULL
+ ,LKMSZ INT NULL
+ ,MSPLKNPD VARCHAR(50) NULL
+ ,STATUSPRIVELEGE INT NULL
+ ,ID_FACT VARCHAR(50) NULL
+ ,PERSON_LG VARCHAR(50) NULL
+ ,SERVDATE DATETIME NULL
+ ,STARTDATE DATETIME NULL
+ ,LASTDATE DATETIME NULL
+ ,SERVPAYAMOUNT_LASTDATE DATETIME NULL
+ ,PERS_GUID VARCHAR(5000) NULL
+ ,A_AMOUNT FLOAT NULL
+ ,org VARCHAR(50) NULL
+ ,A_HASH INT NULL
+  /* Поля для неденежных МСП */
+ ,A_NON_MONETARY_FORM_AMOUNT FLOAT NULL /* Размер (Количество) */
+ ,A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT FLOAT NULL /* Эквивалент в рублях */
+ ,A_CODE_PROVISION_FORM INT NULL
+ ,A_PERIODICITY_CODE INT NULL
+ ,A_STOPDATE DATETIME NULL
+ ,IS_TERMINATION_REL_MSP BIT NULL
+ ,IS_DELETE BIT NOT NULL
+)
+
+;
+WITH A (ID_FACT, ds, num, MSZ, LKMSZ)
+AS
+(SELECT
+    tmp.ID_FACT
+   ,MIN(tmp.STARTDATE)
+   ,ROW_NUMBER() OVER (PARTITION BY tmp.ID_FACT, tmp.MSZ, tmp.LKMSZ ORDER BY tmp.A_AMOUNT, tmp.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, MIN(tmp.STARTDATE))
+   ,tmp.MSZ
+   ,tmp.LKMSZ
+  FROM TEMP_FACT4 tmp
+  WHERE NOT EXISTS (SELECT
+      1
+    FROM TEMP_FACT4
+    WHERE tmp.ID_FACT = ID_FACT
+    AND tmp.MSZ = MSZ
+    AND tmp.LKMSZ = LKMSZ
+    AND ISNULL(tmp.A_AMOUNT, 0) = ISNULL(A_AMOUNT, 0)
+    AND ISNULL(tmp.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, 0) = ISNULL(A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, 0)
+    AND DATEDIFF(DAY, STARTDATE, tmp.STARTDATE) > 0
+    AND DATEDIFF(DAY, tmp.STARTDATE, DATEADD(DAY, 1, LASTDATE)) >= 0)
+  GROUP BY tmp.ID_FACT
+          ,tmp.MSZ
+          ,tmp.LKMSZ
+          ,tmp.A_AMOUNT
+          ,tmp.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+          ,tmp.STARTDATE),
+B (ID_FACT, df, num, MSZ, LKMSZ)
+AS
+(SELECT
+   tmp.ID_FACT
+   ,MIN(tmp.LASTDATE)
+   ,ROW_NUMBER() OVER (PARTITION BY tmp.ID_FACT, tmp.MSZ, tmp.LKMSZ ORDER BY tmp.A_AMOUNT, tmp.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, MIN(tmp.LASTDATE))
+   ,tmp.MSZ
+   ,tmp.LKMSZ
+  FROM TEMP_FACT4 tmp
+  WHERE NOT EXISTS (SELECT
+      1
+    FROM TEMP_FACT4
+    WHERE tmp.ID_FACT = ID_FACT
+    AND tmp.MSZ = MSZ
+    AND tmp.LKMSZ = LKMSZ
+    AND ISNULL(tmp.A_AMOUNT, 0) = ISNULL(A_AMOUNT, 0)
+    AND ISNULL(tmp.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, 0) = ISNULL(A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, 0)
+    AND DATEDIFF(DAY, STARTDATE, DATEADD(DAY, 1, tmp.LASTDATE)) >= 0
+    AND DATEDIFF(DAY, tmp.LASTDATE, LASTDATE) > 0)
+  GROUP BY tmp.ID_FACT
+          ,tmp.MSZ
+          ,tmp.LKMSZ
+          ,tmp.A_AMOUNT
+          ,tmp.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+          ,tmp.LASTDATE)
+
+
+INSERT INTO TEMP_FACT5 (MSZ, LKMSZ, MSPLKNPD, STATUSPRIVELEGE, ID_FACT, PERSON_LG, SERVDATE, STARTDATE, LASTDATE, SERVPAYAMOUNT_LASTDATE, PERS_GUID, A_AMOUNT, org, A_HASH,
+A_NON_MONETARY_FORM_AMOUNT, A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT, A_CODE_PROVISION_FORM, A_PERIODICITY_CODE, A_STOPDATE, IS_TERMINATION_REL_MSP, IS_DELETE)
+  SELECT
+    tf.MSZ
+   ,tf.LKMSZ
+   ,tf.MSPLKNPD
+   ,tf.STATUSPRIVELEGE
+   ,tf.ID_FACT
+   ,tf.PERSON_LG
+   ,tf.SERVDATE
+   ,x.ds STARTDATE
+   ,x.df LASTDATE
+   ,tf.SERVPAYAMOUNT_LASTDATE
+   ,tf.PERS_GUID
+   ,tf.A_AMOUNT
+   ,tf.org
+   ,tf.A_HASH
+   ,tf.A_NON_MONETARY_FORM_AMOUNT
+   ,tf.A_NON_MONETARY_FORM_EQUIVALENT_AMOUNT
+   ,tf.A_CODE_PROVISION_FORM
+   ,tf.A_PERIODICITY_CODE
+   ,tf.A_STOPDATE
+   ,tf.IS_TERMINATION_REL_MSP
+   ,0
+  FROM (SELECT
+      A.ID_FACT
+     ,A.ds
+     ,B.df
+     ,A.MSZ
+     ,A.LKMSZ
+    FROM A
+    INNER JOIN B
+      ON A.ID_FACT = B.ID_FACT
+    WHERE A.num = B.num
+    AND A.MSZ = B.MSZ
+    AND A.LKMSZ = B.LKMSZ) x
+  INNER JOIN TEMP_FACT4 tf
+    ON x.ID_FACT = tf.ID_FACT
+  WHERE DATEDIFF(DAY, tf.STARTDATE, x.ds) = 0
+  AND x.MSZ = tf.MSZ
+  AND x.LKMSZ = tf.LKMSZ'
+
+IF (@mspStopType = 'ObjectsList')
+BEGIN
+  SET @SQL_RAYON = @SQL_RAYON + '
+UPDATE TEMP_FACT5
+SET A_STOPDATE = ess.A_STOPDATE
+,IS_TERMINATION_REL_MSP =
+CASE
+WHEN stopServ.OUID IS NULL OR
+sr.A_NAME != ''Прекращение в связи с назначением связанной МСП'' THEN 0
+ELSE 1
+END
+FROM TEMP_FACT5
+INNER JOIN ESRN_SERV_SERV ess
+ON ID_FACT = ess.GUID
+LEFT JOIN SPR_STOPSERV_ESRNSERVSERV linkEsrnStop
+INNER JOIN WM_STOP_SERVSERV stopServ
+ON linkEsrnStop.TOID = stopServ.OUID
+AND stopServ.A_TYPE = ''15''
+AND ISNULL(stopServ.A_STATUS, 10) = 10
+INNER JOIN SPR_REFUSE sr
+ON stopServ.A_REASON = sr.OUID
+ON ess.OUID = linkEsrnStop.FROMID
+WHERE DATEDIFF(DAY, STARTDATE, ess.A_STOPDATE) > 0
+AND DATEDIFF(DAY, ess.A_STOPDATE, ISNULL(LASTDATE, CONVERT(DATETIME, ''3000-01-01'', 120))) >= 0'
+END
+ELSE
+BEGIN
+  SET @SQL_RAYON = @SQL_RAYON + '
+UPDATE TEMP_FACT5
+SET A_STOPDATE = ess.A_STOPDATE
+,IS_TERMINATION_REL_MSP =
+CASE
+WHEN stopServ.OUID IS NULL OR
+sr.A_NAME != ''Прекращение в связи с назначением связанной МСП'' THEN 0
+ELSE 1
+END
+FROM TEMP_FACT5
+INNER JOIN ESRN_SERV_SERV ess
+ON ID_FACT = ess.GUID
+LEFT JOIN WM_STOP_SERVSERV stopServ
+INNER JOIN SPR_REFUSE sr
+ON stopServ.A_REASON = sr.OUID
+
+ON ess.OUID = stopServ.A_SERV
+AND stopServ.A_TYPE = ''15''
+AND ISNULL(stopServ.A_STATUS, 10) = 10
+WHERE DATEDIFF(DAY, STARTDATE, ess.A_STOPDATE) > 0
+AND DATEDIFF(DAY, ess.A_STOPDATE, ISNULL(LASTDATE, CONVERT(DATETIME, ''3000-01-01'', 120))) >= 0
+'
+END
+
+SET @SQL_RAYON = @SQL_RAYON + '
+UPDATE tf
+SET LASTDATE = SERVPAYAMOUNT_LASTDATE
+FROM TEMP_FACT5 tf
+WHERE DATEDIFF(MONTH, tf.LASTDATE, ISNULL(tf.SERVPAYAMOUNT_LASTDATE, @endDateNull)) > 0
+AND NOT EXISTS (SELECT
+    1
+  FROM TEMP_FACT5
+  WHERE tf.ID_FACT = ID_FACT
+  AND tf.MSZ = MSZ
+  AND tf.LKMSZ = LKMSZ
+  AND DATEDIFF(DAY, tf.LASTDATE, LASTDATE) > 0)
+
+--AND NOT EXISTS (SELECT
+--      1
+--    FROM EGISSO_NEW_STORE store
+--    WHERE tf.ID_FACT = store.A_SERV_GUID
+--    AND DATEDIFF(MONTH, tf.STARTDATE, store.A_DATE_START) > 0
+--    AND ISNULL(store.A_STATUS, 10) = 10)
+
+INSERT INTO EGISSO_NEW_PARAM_COLLECT_FACT (A_GUID_SERV)
+  SELECT ID_FACT FROM TEMP_FACT5
+
+DELETE FROM EGISSO_NEW_PARAM_COLLECT_FACT
+WHERE A_GUID_SERV IS NULL
+
+SELECT *, ''~#RAYOUID#'' A_RAY_ID FROM TEMP_FACT5'
+
+SELECT @SQL_RAYON sql
