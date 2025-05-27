@@ -590,34 +590,53 @@ class AIConverter:
             ]
         }
         
-        try:
-            response = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers=headers,
-                json=data,
-                timeout=self.api_timeout  # Используем настраиваемый таймаут
-            )
-            
-            print(f"Код ответа от Anthropic API: {response.status_code}")
-            
-            if response.status_code != 200:
-                return False, original_script, f"Ошибка API Anthropic: {response.status_code} - {response.text}"
-            
-            response_data = response.json()
-            converted_script = response_data['content'][0]['text']
-            
-            # Извлекаем SQL из ответа (может содержать пояснения)
-            converted_script = self._extract_sql_from_response(converted_script)
-            
-            # Постобработка результата
-            converted_script = self._post_process_sql(converted_script)
-            
-            return True, converted_script, "Успешно сконвертировано с помощью Anthropic Claude"
-            
-        except requests.exceptions.Timeout:
-            return False, original_script, f"Превышен таймаут запроса к Anthropic API ({self.api_timeout} секунд)"
-        except Exception as e:
-            return False, original_script, f"Ошибка при запросе к Anthropic: {str(e)}"
+        # Повторные попытки для обработки ошибок перегрузки сервера
+        max_retries = 3
+        base_delay = 5  # базовая задержка в секундах
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers=headers,
+                    json=data,
+                    timeout=self.api_timeout  # Используем настраиваемый таймаут
+                )
+                
+                print(f"Код ответа от Anthropic API: {response.status_code}")
+                
+                # Обработка ошибки 529 (Overloaded)
+                if response.status_code == 529:
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)  # экспоненциальная задержка
+                        print(f"⚠️ Сервера Anthropic перегружены (529). Повторная попытка {attempt + 2}/{max_retries} через {delay} секунд...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        return False, original_script, f"Сервера Anthropic перегружены. Попробуйте позже или используйте --provider openai"
+                
+                # Обработка других ошибок HTTP
+                if response.status_code != 200:
+                    return False, original_script, f"Ошибка API Anthropic: {response.status_code} - {response.text}"
+                
+                response_data = response.json()
+                converted_script = response_data['content'][0]['text']
+                
+                # Извлекаем SQL из ответа (может содержать пояснения)
+                converted_script = self._extract_sql_from_response(converted_script)
+                
+                # Постобработка результата
+                converted_script = self._post_process_sql(converted_script)
+                
+                return True, converted_script, "Успешно сконвертировано с помощью Anthropic Claude"
+                
+            except requests.exceptions.Timeout:
+                return False, original_script, f"Превышен таймаут запроса к Anthropic API ({self.api_timeout} секунд)"
+            except Exception as e:
+                return False, original_script, f"Ошибка при запросе к Anthropic: {str(e)}"
+        
+        # Если все попытки исчерпаны
+        return False, original_script, "Не удалось выполнить запрос к Anthropic API после нескольких попыток"
     
     def _get_system_prompt(self) -> str:
         """
@@ -1617,34 +1636,53 @@ class AIConverter:
             ]
         }
         
-        try:
-            response = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers=headers,
-                json=data,
-                timeout=self.api_timeout  # Используем настраиваемый таймаут
-            )
-            
-            print(f"Код ответа от Anthropic API: {response.status_code}")
-            
-            if response.status_code != 200:
-                return False, chunk, f"Ошибка API Anthropic: {response.status_code} - {response.text}"
-            
-            response_data = response.json()
-            converted_chunk = response_data['content'][0]['text']
-            
-            # Извлекаем SQL из ответа
-            converted_chunk = self._extract_sql_from_response(converted_chunk)
-            
-            # Постобработка результата
-            converted_chunk = self._post_process_sql(converted_chunk)
-            
-            return True, converted_chunk, "Успешно сконвертировано с помощью Anthropic Claude"
-            
-        except requests.exceptions.Timeout:
-            return False, chunk, f"Превышен таймаут запроса к Anthropic API ({self.api_timeout} секунд)"
-        except Exception as e:
-            return False, chunk, f"Ошибка при запросе к Anthropic: {str(e)}"
+        # Повторные попытки для обработки ошибок перегрузки сервера
+        max_retries = 3
+        base_delay = 5  # базовая задержка в секундах
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers=headers,
+                    json=data,
+                    timeout=self.api_timeout  # Используем настраиваемый таймаут
+                )
+                
+                print(f"Код ответа от Anthropic API: {response.status_code}")
+                
+                # Обработка ошибки 529 (Overloaded)
+                if response.status_code == 529:
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)  # экспоненциальная задержка
+                        print(f"⚠️ Сервера Anthropic перегружены (529). Повторная попытка {attempt + 2}/{max_retries} через {delay} секунд...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        return False, chunk, f"Сервера Anthropic перегружены. Попробуйте позже или используйте --provider openai"
+                
+                # Обработка других ошибок HTTP
+                if response.status_code != 200:
+                    return False, chunk, f"Ошибка API Anthropic: {response.status_code} - {response.text}"
+                
+                response_data = response.json()
+                converted_chunk = response_data['content'][0]['text']
+                
+                # Извлекаем SQL из ответа
+                converted_chunk = self._extract_sql_from_response(converted_chunk)
+                
+                # Постобработка результата
+                converted_chunk = self._post_process_sql(converted_chunk)
+                
+                return True, converted_chunk, "Успешно сконвертировано с помощью Anthropic Claude"
+                
+            except requests.exceptions.Timeout:
+                return False, chunk, f"Превышен таймаут запроса к Anthropic API ({self.api_timeout} секунд)"
+            except Exception as e:
+                return False, chunk, f"Ошибка при запросе к Anthropic: {str(e)}"
+        
+        # Если все попытки исчерпаны
+        return False, chunk, "Не удалось выполнить запрос к Anthropic API после нескольких попыток"
     
     def _post_process_large_script(self, script: str) -> str:
         """
