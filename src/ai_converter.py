@@ -672,6 +672,12 @@ class AIConverter:
 14. Если встречается выражение ROUND(X, Y), то учти что аргумент X должен быть приведён к типу numeric.
 15. Если встречается выражение ROUND(CAST(X as NUMERIC(Y,Z),2), то учти, что правильное выражение должно быть ROUND(X)::numeric((Y,Z), 2), аргумент X должен быть приведён к типу numeric.
 
+16. Учитывай различия в EXISTS/NOT EXISTS – исправь, чтобы все ссылки на JOIN-таблицы были доступны внутри подзапроса.
+17. STUFF + FOR XML PATH(’’) замени на TRIM(LEADING ‘,’) + STRING_AGG(DISTINCT …).
+18. Для SELECT ‘…’ AS message – в PostgreSQL сделай RETURN QUERY SELECT ‘…’::TEXT AS message.
+19. Если MSSQL-скрипт возвращал данные, не используй DO $$ – перепиши в RETURNS TABLE-функцию. Пример: если в MSSQL есть ‘SELECT ‘‘message’’ AS message’, то в PostgreSQL это должен быть RETURN QUERY SELECT ‘message’::TEXT AS message.”
+20. Все конструкции типа DELETE FROM … WHERE … должны быть полностью эквивалентны.
+21. Проверь, не используются ли во вложенных EXISTS/NOT EXISTS подзапросах псевдонимы таблиц из внешнего JOIN (например, curRequest.A_STATUS_PROC != …). Если да — добавь аналогичный JOIN внутрь подзапроса, чтобы условие было доступно, либо перепиши логику. В комментарии приведи пример до/после и объясни, что исправил.
 
 Если в запросе есть COALESCE с разными типами, явно указывай приведение типов.
 В PostgreSQL типы должны совпадать в таких функциях, как COALESCE, NULLIF, CASE и т.д.
